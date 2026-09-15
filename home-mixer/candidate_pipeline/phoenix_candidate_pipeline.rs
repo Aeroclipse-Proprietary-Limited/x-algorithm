@@ -88,6 +88,7 @@ use crate::side_effects::phoenix_experiments_side_effect::PhoenixExperimentsSide
 use crate::side_effects::phoenix_request_cache_side_effect::PhoenixRequestCacheSideEffect;
 use crate::side_effects::redis_post_candidate_cache_side_effect::RedisPostCandidateCacheSideEffect;
 use crate::side_effects::reranking_kafka_side_effect::RerankingKafkaSideEffect;
+use crate::side_effects::response_diversity_stats_side_effect::ResponseDiversityStatsSideEffect;
 use crate::side_effects::scored_stats_side_effect::ScoredStatsSideEffect;
 use crate::sources::cached_posts_source::CachedPostsSource;
 use crate::sources::phoenix_moe_source::PhoenixMOESource;
@@ -451,6 +452,7 @@ impl PhoenixCandidatePipeline {
                 Box::new(RerankingKafkaSideEffect::new(reranking_kafka_client)),
                 Box::new(RedisPostCandidateCacheSideEffect::new(redis_client)),
                 Box::new(ScoredStatsSideEffect),
+                Box::new(ResponseDiversityStatsSideEffect),
                 Box::new(AuthorServedMetricsSideEffect),
                 Box::new(MutualFollowStatsSideEffect),
                 Box::new(DebugSideEffect),

@@ -120,6 +120,14 @@ message PredictNextActionsRequest {
   map<string, string> experiment_overrides = 21;
 
   bool returnLogitsList = 22;
+
+  repeated PurchaseValueBaseline purchase_value_baselines = 23;
+}
+
+message PurchaseValueBaseline {
+  int64 impression_id = 1;
+  int64 advertiser_account_id = 2;
+  double mean_value_usd_28d = 3;
 }
 
 message PageDecodeParams {
@@ -478,6 +486,7 @@ enum ContinuousActionName {
   CLICK_DWELL_TIME = 2;
   ACTIVE_SECS_5M_RESIDUAL_NORM = 3;
   BRIDGE_PROBABILITY = 4;
+  ADS_WEB_CT_PURCHASE_VALUE = 5;
 }
 
 enum ActionGroup {
