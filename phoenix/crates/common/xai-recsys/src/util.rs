@@ -728,11 +728,7 @@ impl InputBuffer {
         if let Some(ctx) = user_ctx {
             categorical_features[USER_STATE] = ctx.user_state as i16;
             record_fill("user_state", ctx.user_state != 0);
-            categorical_features[USER_GENDER] = match pb::Gender::try_from(ctx.user_gender) {
-                Ok(pb::Gender::Male) => 2,
-                Ok(pb::Gender::Female) => 1,
-                _ => 0,
-            };
+            categorical_features[USER_GENDER] = ctx.user_gender as i16;
             record_fill("gender", categorical_features[USER_GENDER] != 0);
             categorical_features[USER_AGE_BRACKET] = ctx.user_age_bracket as i16;
             record_fill("age_bracket", ctx.user_age_bracket != 0);
@@ -2355,5 +2351,21 @@ mod tests {
         assert_eq!(1, cand.int64_features[base1 + FAV_COUNT_SEQ]);
         assert_eq!(5, cand.int64_features[base1 + VIEW_COUNT_SEQ]);
         assert!(!cand.bool_features[n_post_bool + IS_STALE_POST14D]);
+    }
+
+    #[test]
+    fn user_gender_is_raw_proto_enum() {
+        let mut cfg = test_model_config(0).hash_table;
+        cfg.num_user_categorical_features = 7;
+        cfg.num_user_float_features = 4;
+        let gender_idx = crate::feature_config::user_categorical_feature::USER_GENDER;
+        for g in [pb::Gender::Male, pb::Gender::Female, pb::Gender::Unknown] {
+            let ctx = pb::UserContext {
+                user_gender: g as i32,
+                ..Default::default()
+            };
+            let f = InputBuffer::extract_user_features(&cfg, None, Some(&ctx));
+            assert_eq!(f.categorical_features[gender_idx], g as i16, "{g:?}");
+        }
     }
 }

@@ -168,6 +168,7 @@ fn decision_outcome(
         head: crate::facts::head_label(score).to_owned(),
         fired_heads: summary.map(|s| s.fired_heads.clone()).unwrap_or_default(),
         labels: summary.map(|s| s.labels.clone()).unwrap_or_default(),
+        score_id: score.score_id.clone(),
     }
 }
 
@@ -2104,7 +2105,7 @@ mod decision_outcome_json_tests {
         EntityType as ProtoEntityType, FiredHead, ScoreResult, SummaryCounters,
     };
 
-                        #[test]
+                            #[test]
     fn decision_outcome_json_mirror_carries_funnel_fields() {
         let score = ScoreResult {
             user_id: 100,
@@ -2120,6 +2121,7 @@ mod decision_outcome_json_tests {
                 }],
                 ..Default::default()
             }),
+            score_id: "run-abc-7".into(),
             ..Default::default()
         };
         let mut info = BTreeMap::new();
@@ -2128,6 +2130,7 @@ mod decision_outcome_json_tests {
             r#"["addPostLabelsV2"]"#.to_owned(),
         );
         let outcome = decision_outcome(&score, "some.topic", "success".into(), true, info);
+        assert_eq!(outcome.score_id, "run-abc-7");
         let v = serde_json::to_value(&outcome).expect("DecisionOutcome serializes to JSON");
 
         assert!(v["decided_at_ms"].as_i64().unwrap() > 0);
@@ -2141,6 +2144,22 @@ mod decision_outcome_json_tests {
         assert_eq!(v["fired_heads"][0]["name"], "IsSpamPost");
         assert_eq!(v["labels"][0], "my_model_threshold_reached");
         assert_eq!(v["info"]["action_kinds"], r#"["addPostLabelsV2"]"#);
+        assert_eq!(v["score_id"], "run-abc-7");
+
+        let legacy = ScoreResult {
+            score_id: String::new(),
+            ..score
+        };
+        let outcome = decision_outcome(
+            &legacy,
+            "some.topic",
+            "success".into(),
+            true,
+            BTreeMap::new(),
+        );
+        assert_eq!(outcome.score_id, "");
+        let v = serde_json::to_value(&outcome).expect("DecisionOutcome serializes to JSON");
+        assert_eq!(v["score_id"], "");
     }
 }
 

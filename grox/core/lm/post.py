@@ -101,8 +101,17 @@ class PostRenderer:
         if post.space_metadata:
             res.extend(post.space_metadata.to_convo())
         if post.quoted_post:
+            quoted_user = post.quoted_post.user
+            by = (
+                f" by @{quoted_user.handle}"
+                if quoted_user and quoted_user.handle
+                else ""
+            )
+            if by and post.user and post.user.handle == quoted_user.handle:
+                by += " (this Post's author, quoting their OWN post)"
             res.append(
-                f"\n\n{indent_str}This Post quotes Post {post.quoted_post.id}\n\n"
+                f"\n\n{indent_str}This Post quotes Post {post.quoted_post.id}{by};"
+                " the quoted content below is embedded within this Post\n\n"
             )
             res.extend(
                 cls.render(

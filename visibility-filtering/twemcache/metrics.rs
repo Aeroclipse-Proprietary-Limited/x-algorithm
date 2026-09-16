@@ -7,25 +7,14 @@ const PIPELINE_DEPTH: &str = "twemcache_pipeline_depth";
 const CONNECTION_EVENTS: &str = "twemcache_connection_events_total";
 const DISCOVERY_SERVERS: &str = "twemcache_discovery_servers";
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub(crate) enum ConnEvent {
     Tripped,
     ProbeOk,
     ProbeFail,
     TornDown,
     IdleCloseRetry,
-}
-
-impl ConnEvent {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Tripped => "tripped",
-            Self::ProbeOk => "probe_ok",
-            Self::ProbeFail => "probe_fail",
-            Self::TornDown => "torn_down",
-            Self::IdleCloseRetry => "idle_close_retry",
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -86,7 +75,7 @@ impl Metrics {
 
     pub(crate) fn record_connection_event(&self, event: ConnEvent) {
         if let Some(sr) = self.sink() {
-            sr.incr(CONNECTION_EVENTS, &[("event", event.as_str())], 1);
+            sr.incr(CONNECTION_EVENTS, &[("event", event.into())], 1);
         }
     }
 

@@ -1211,7 +1211,7 @@ class RecsysTwoTowerModel(hk.Module):
                 "pallas_ranker_varlen_attn",
                 "cutedsl_ranker_varlen_attn",
             )
-            user_outputs, _ = self.user_tower(
+            user_outputs, _, _ = self.user_tower(
                 user_embeddings,
                 user_padding_mask,
                 is_training=is_training,
@@ -1290,7 +1290,7 @@ class RecsysTwoTowerModel(hk.Module):
             else:
                 user_positions = jnp.full((B, T, 3), 0, dtype=jnp.float32)
                 user_positions = user_positions.at[:, :, 0].set(jnp.arange(start=0, stop=T))
-            user_outputs, _ = self.user_tower(
+            user_outputs, _, _ = self.user_tower(
                 user_embeddings,
                 user_padding_mask,
                 is_training=is_training,

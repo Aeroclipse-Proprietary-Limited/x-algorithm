@@ -92,6 +92,97 @@ def continuous_loss_compute(
     return loss, gt_clamped, pred_in_original_units, loss_mask, errors
 
 
+def purchase_value_valid_mask(
+    label_valid: jax.Array,
+    padding_mask: jax.Array,
+    negative_sample_mask: jax.Array,
+    delayed_mask: jax.Array,
+    has_click: jax.Array,
+    has_purchase: jax.Array,
+    keeper_mask: jax.Array,
+) -> jax.Array:
+    return (
+        label_valid.astype(jnp.bool_)
+        & padding_mask.astype(jnp.bool_)
+        & ~negative_sample_mask.astype(jnp.bool_)
+        & delayed_mask.astype(jnp.bool_)
+        & has_click.astype(jnp.bool_)
+        & has_purchase.astype(jnp.bool_)
+        & keeper_mask.astype(jnp.bool_)
+    )
+
+
+def purchase_value_loss_compute(
+    raw_ratio: jax.Array,
+    pred_ratio: jax.Array,
+    baseline_mean_usd: jax.Array,
+    valid_mask: jax.Array,
+    delta: float = 1.0,
+    raw_weights: jax.Array | None = None,
+) -> tuple[jax.Array, dict[str, jax.Array]]:
+    if not 0 < delta < float("inf"):
+        raise ValueError("purchase value Huber delta must be finite and positive")
+    ratio = raw_ratio.astype(jnp.float32)
+    baseline = baseline_mean_usd.astype(jnp.float32)
+    pred = pred_ratio.astype(jnp.float32)
+    valid = (
+        valid_mask.astype(jnp.bool_)
+        & jnp.isfinite(ratio)
+        & (ratio > 0)
+        & jnp.isfinite(baseline)
+        & (baseline > 0)
+    )
+    weights = jnp.ones_like(ratio) if raw_weights is None else raw_weights.astype(jnp.float32)
+    valid = valid & jnp.isfinite(weights) & (weights > 0)
+    weights = jnp.where(valid, weights, 0.0)
+    target = jnp.where(valid, ratio, 0.0)
+    error = jnp.where(valid, jnp.where(valid, pred, 0.0) - target, 0.0)
+    abs_error = jnp.abs(error)
+    quadratic = jnp.minimum(abs_error, delta)
+    errors = 0.5 * quadratic**2 + delta * (abs_error - quadratic)
+    weight_sum = jnp.sum(weights)
+    denominator = jnp.where(weight_sum > 0, weight_sum, 1.0)
+    loss = jnp.sum(errors * weights) / denominator
+    stats = {
+        "purchase-value-loss": loss,
+        "purchase-value-valid-count": jnp.sum(valid),
+        "purchase-value-weight-sum": weight_sum,
+        "purchase-value-ratio-mae": jnp.sum(abs_error * weights) / denominator,
+        "purchase-value-target-ratio": jnp.sum(jnp.where(valid, ratio, 0.0) * weights)
+        / denominator,
+        "purchase-value-pred-ratio": jnp.sum(jnp.where(valid, pred, 0.0) * weights) / denominator,
+        "purchase-value-baseline-mean-usd": jnp.sum(jnp.where(valid, baseline, 0.0) * weights)
+        / denominator,
+    }
+    return loss, stats
+
+
+def binary_threshold_loss_compute(
+    gt_raw: jax.Array,
+    logit: jax.Array,
+    valid_mask: jax.Array,
+    negative_sample_mask: jax.Array,
+    threshold: float,
+    mask_negatives: bool = True,
+    raw_weights: jax.Array | None = None,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    logit = logit.astype(jnp.float32)
+    gt_binary = (gt_raw.astype(jnp.float32) > threshold).astype(jnp.float32)
+    per_element_loss = optax.sigmoid_binary_cross_entropy(logit, gt_binary)
+
+    if mask_negatives:
+        loss_mask = valid_mask & (~negative_sample_mask)
+    else:
+        loss_mask = valid_mask
+
+    weights = loss_mask if raw_weights is None else loss_mask * raw_weights
+    num_loss_samples = jnp.sum(weights)
+    loss = jnp.sum(per_element_loss * weights) / jnp.maximum(num_loss_samples, 1.0)
+
+    pred_prob = jax.nn.sigmoid(logit)
+    return loss, gt_binary, pred_prob, loss_mask, per_element_loss
+
+
 def tweedie_loss_compute(
     gt_raw: jax.Array,
     pred_raw: jax.Array,

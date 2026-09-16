@@ -1,4 +1,4 @@
-// mirrored from config feature-switch defaults; last sync 2026-09-14T16:22:15Z
+// mirrored from config feature-switch defaults; last sync 2026-09-15T16:25:02Z
 use xai_feature_switches::param;
 
 param!(
@@ -940,7 +940,7 @@ param!(
     EnableAdsBrandSafetyVerdictV2,
     bool,
     "rust_home_mixer_ads_bs_v2_exp_enabled",
-    true
+    false
 );
 param!(
     AdsTimeGapTSec,

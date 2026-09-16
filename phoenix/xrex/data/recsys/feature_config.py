@@ -144,6 +144,8 @@ OPTIONAL_COLUMNS: list[str] = [
     "authorFollowerCountSeq",
     "inReplyToPostIdSeq",
     "is_delayed_feedback",
+    "valueLabelValidSeq",
+    "valueBaselineMeanUsdSeq",
     "conversionKeepMask",
 ]
 

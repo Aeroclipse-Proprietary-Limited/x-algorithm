@@ -236,7 +236,7 @@ fn line_json(
         "chunk": chunk,
         "build": context.build_sha,
         "dc": context.dc,
-        "level": context.safety_level.as_str(),
+        "level": <&str>::from(context.safety_level),
         "viewer": context.viewer_id,
         "diffs": diffs,
     })
@@ -406,7 +406,7 @@ impl ReferenceCompareHarness {
     }
 
     fn emit(&self, safety_level: SafetyLevel, counts: &CompareCounts) {
-        let level = safety_level.as_str();
+        let level = <&str>::from(safety_level);
         self.incr_nonzero(COMPARED, &[("safety_level", level)], counts.compared);
         self.incr_nonzero(EXACT_MATCH, &[("safety_level", level)], counts.exact_match);
         self.incr_nonzero(DIFFERED, &[("safety_level", level)], counts.differed);

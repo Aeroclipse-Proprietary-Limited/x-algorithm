@@ -19,23 +19,13 @@ const FALLBACK_CACHE_KEYS: &str = "vf_fallback_cache_keys";
 const FALLBACK_CACHE_ENTRIES: &str = "vf_fallback_cache_entries";
 const AUTHOR_LABELS: &str = "vf_author_labels";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub(crate) enum HydratorOutcome {
     Success,
     Partial,
     Timeout,
     Error,
-}
-
-impl HydratorOutcome {
-    fn as_str(self) -> &'static str {
-        match self {
-            HydratorOutcome::Success => "success",
-            HydratorOutcome::Partial => "partial",
-            HydratorOutcome::Timeout => "timeout",
-            HydratorOutcome::Error => "error",
-        }
-    }
 }
 
 pub(crate) fn batch_outcome<K, V, E>(map: &HashMap<K, Result<V, E>>) -> HydratorOutcome {
@@ -107,7 +97,7 @@ pub(crate) fn record_hydrator_request(
         debug!(
             client,
             method,
-            outcome = outcome.as_str(),
+            outcome = <&str>::from(outcome),
             candidate_count,
             "Hydrator fail-open"
         );
@@ -117,8 +107,8 @@ pub(crate) fn record_hydrator_request(
         &[
             ("client", client),
             ("method", method),
-            ("outcome", outcome.as_str()),
-            ("safety_level", safety_level.as_str()),
+            ("outcome", outcome.into()),
+            ("safety_level", safety_level.into()),
         ],
         1,
     );
@@ -127,8 +117,8 @@ pub(crate) fn record_hydrator_request(
         &[
             ("client", client),
             ("method", method),
-            ("result", outcome.as_str()),
-            ("safety_level", safety_level.as_str()),
+            ("result", outcome.into()),
+            ("safety_level", safety_level.into()),
         ],
         candidate_count as u64,
     );
@@ -137,7 +127,7 @@ pub(crate) fn record_hydrator_request(
         &[
             ("client", client),
             ("method", method),
-            ("safety_level", safety_level.as_str()),
+            ("safety_level", safety_level.into()),
         ],
         latency_ms,
         HistogramBuckets::Bucket50To500,
@@ -156,7 +146,7 @@ fn record_keyed_hydrator_request(
         debug!(
             client,
             method,
-            outcome = outcome.as_str(),
+            outcome = <&str>::from(outcome),
             success_keys = counts.success_keys,
             timeout_keys = counts.timeout_keys,
             error_keys = counts.error_keys,
@@ -168,8 +158,8 @@ fn record_keyed_hydrator_request(
         &[
             ("client", client),
             ("method", method),
-            ("outcome", outcome.as_str()),
-            ("safety_level", safety_level.as_str()),
+            ("outcome", outcome.into()),
+            ("safety_level", safety_level.into()),
         ],
         1,
     );
@@ -182,7 +172,7 @@ fn record_keyed_hydrator_request(
             ("client", client),
             ("method", method),
             ("result", result),
-            ("safety_level", safety_level.as_str()),
+            ("safety_level", safety_level.into()),
         ];
         incr_nonzero(HYDRATOR_KEYS, &labels, keys as u64);
         incr_nonzero(HYDRATOR_TWEET_IDS, &labels, candidates as u64);
@@ -192,7 +182,7 @@ fn record_keyed_hydrator_request(
         &[
             ("client", client),
             ("method", method),
-            ("safety_level", safety_level.as_str()),
+            ("safety_level", safety_level.into()),
         ],
         latency_ms,
         HistogramBuckets::Bucket50To500,

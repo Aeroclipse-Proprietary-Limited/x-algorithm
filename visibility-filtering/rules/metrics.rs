@@ -64,7 +64,7 @@ pub(crate) fn record_verdicts<'a>(
     verdicts: impl IntoIterator<Item = &'a Verdict>,
 ) {
     let aggregated = aggregate_verdicts(verdicts);
-    let level = safety_level.as_str();
+    let level = <&str>::from(safety_level);
     for (action, count) in &aggregated.mix {
         incr_nonzero(
             VERDICTS,

@@ -772,6 +772,10 @@ def pad_batch(batch_unpadded: RecsysFeaturesBatch, batch_size: int) -> RecsysFea
             padded["trained_candidate_mask"] = np.pad(
                 _tcm, ((0, batch_size - num_rows), (0, 0)), constant_values=True
             )
+        if (value_valid := post_seq.get("value_label_valid")) is not None:
+            padded["value_label_valid"] = pad_array(value_valid)
+        if (value_baseline := post_seq.get("value_baseline_mean_usd")) is not None:
+            padded["value_baseline_mean_usd"] = pad_array(value_baseline)
         return padded
 
     def _pad_post_seq_fields(post_seq: PostSeq) -> PostSeq:
