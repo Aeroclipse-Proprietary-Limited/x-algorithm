@@ -1,7 +1,7 @@
 use super::builders::labeled;
 use super::{Role, Row};
 use crate::models::SafetyLabelType;
-use crate::rules::fixtures::{allow, dropped};
+use crate::rules::fixtures::{allow, candidate, dropped};
 use crate::rules::SafetyLevel::{TimelineHome, TimelineHomeHydration};
 use xai_visibility_filtering::models::{
     Action, DropReason, FilteredReason, SafetyResult, SafetyResultReason,
@@ -18,7 +18,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "ForEmergencyUseOnlyDropRule",
+                        "for_emergency_use_only/drop/unspecified",
                     ),
                 ),
                 (
@@ -26,7 +26,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "ForEmergencyUseOnlyDropRule",
+                        "for_emergency_use_only/drop/unspecified",
                     ),
                 ),
                 (
@@ -34,7 +34,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Author,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "ForEmergencyUseOnlyDropRule",
+                        "for_emergency_use_only/drop/unspecified",
                     ),
                 ),
                 (
@@ -42,7 +42,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Author,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "ForEmergencyUseOnlyDropRule",
+                        "for_emergency_use_only/drop/unspecified",
                     ),
                 ),
             ],
@@ -54,12 +54,12 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHome,
                     Role::NonFollower,
-                    dropped(nsfw_high_precision_reason(), "PdnaTweetLabelRule"),
+                    dropped(nsfw_high_precision_reason(), "pdna/drop/safety_result"),
                 ),
                 (
                     TimelineHome,
                     Role::Follower,
-                    dropped(nsfw_high_precision_reason(), "PdnaTweetLabelRule"),
+                    dropped(nsfw_high_precision_reason(), "pdna/drop/safety_result"),
                 ),
                 (TimelineHome, Role::Author, allow()),
             ],
@@ -71,12 +71,12 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHome,
                     Role::NonFollower,
-                    dropped(FilteredReason::TweetIsBounced, "BounceTweetLabelRule"),
+                    dropped(FilteredReason::TweetIsBounced, "bounce/drop/bounced"),
                 ),
                 (
                     TimelineHome,
                     Role::Follower,
-                    dropped(FilteredReason::TweetIsBounced, "BounceTweetLabelRule"),
+                    dropped(FilteredReason::TweetIsBounced, "bounce/drop/bounced"),
                 ),
                 (TimelineHome, Role::Author, allow()),
             ],
@@ -88,14 +88,33 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHome,
                     Role::NonFollower,
-                    dropped(FilteredReason::PossiblyUndesirable, "SpamTweetLabelRule"),
+                    dropped(FilteredReason::PossiblyUndesirable, "spam/drop/undesirable"),
                 ),
                 (
                     TimelineHome,
                     Role::Follower,
-                    dropped(FilteredReason::PossiblyUndesirable, "SpamTweetLabelRule"),
+                    dropped(FilteredReason::PossiblyUndesirable, "spam/drop/undesirable"),
                 ),
                 (TimelineHome, Role::Author, allow()),
+            ],
+        },
+        Row {
+            name: "spam_and_bounce_labels",
+            post: candidate()
+                .with_label(SafetyLabelType::SPAM)
+                .with_label(SafetyLabelType::BOUNCE)
+                .build(),
+            expect: vec![
+                (
+                    TimelineHome,
+                    Role::NonFollower,
+                    dropped(FilteredReason::TweetIsBounced, "bounce/drop/bounced"),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::NonFollower,
+                    dropped(FilteredReason::PossiblyUndesirable, "spam/drop/undesirable"),
+                ),
             ],
         },
         Row {
@@ -107,7 +126,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "FosnrHatefulConductDropRule",
+                        "fosnr_hateful_conduct/drop/undesirable",
                     ),
                 ),
                 (
@@ -115,7 +134,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "FosnrHatefulConductDropRule",
+                        "fosnr_hateful_conduct/drop/undesirable",
                     ),
                 ),
                 (TimelineHome, Role::Author, allow()),
@@ -130,7 +149,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "FosnrViolentSpeechDropRule",
+                        "fosnr_violent_speech/drop/undesirable",
                     ),
                 ),
                 (
@@ -138,7 +157,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "FosnrViolentSpeechDropRule",
+                        "fosnr_violent_speech/drop/undesirable",
                     ),
                 ),
                 (TimelineHome, Role::Author, allow()),
@@ -151,12 +170,18 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHome,
                     Role::NonFollower,
-                    dropped(FilteredReason::PossiblyUndesirable, "FosnrAbuseDropRule"),
+                    dropped(
+                        FilteredReason::PossiblyUndesirable,
+                        "fosnr_abuse/drop/undesirable",
+                    ),
                 ),
                 (
                     TimelineHome,
                     Role::Follower,
-                    dropped(FilteredReason::PossiblyUndesirable, "FosnrAbuseDropRule"),
+                    dropped(
+                        FilteredReason::PossiblyUndesirable,
+                        "fosnr_abuse/drop/undesirable",
+                    ),
                 ),
                 (TimelineHome, Role::Author, allow()),
             ],
@@ -170,7 +195,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "FosnrCivicIntegrityDropRule",
+                        "fosnr_civic_integrity/drop/undesirable",
                     ),
                 ),
                 (
@@ -178,10 +203,54 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "FosnrCivicIntegrityDropRule",
+                        "fosnr_civic_integrity/drop/undesirable",
                     ),
                 ),
                 (TimelineHome, Role::Author, allow()),
+            ],
+        },
+        Row {
+            name: "fosnr_hateful_conduct_and_bounce_labels",
+            post: candidate()
+                .with_label(SafetyLabelType::FOSNR_HATEFUL_CONDUCT)
+                .with_label(SafetyLabelType::BOUNCE)
+                .build(),
+            expect: vec![
+                (
+                    TimelineHome,
+                    Role::NonFollower,
+                    dropped(FilteredReason::TweetIsBounced, "bounce/drop/bounced"),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::NonFollower,
+                    dropped(
+                        FilteredReason::PossiblyUndesirable,
+                        "fosnr_hateful_conduct/drop/undesirable",
+                    ),
+                ),
+            ],
+        },
+        Row {
+            name: "fosnr_abuse_insults_and_bounce_labels",
+            post: candidate()
+                .with_label(SafetyLabelType::FOSNR_ABUSE_INSULTS)
+                .with_label(SafetyLabelType::BOUNCE)
+                .build(),
+            expect: vec![
+                (
+                    TimelineHomeHydration,
+                    Role::NonFollower,
+                    dropped(
+                        FilteredReason::PossiblyUndesirable,
+                        "fosnr_abuse_insults_non_follower/drop/undesirable",
+                    ),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::Follower,
+                    dropped(FilteredReason::TweetIsBounced, "bounce/drop/bounced"),
+                ),
             ],
         },
     ]

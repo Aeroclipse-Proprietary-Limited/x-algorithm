@@ -17,7 +17,7 @@ impl xai_x_service_builder::XService for VFServer {
     type Config = ();
 
     async fn build(ctx: xai_x_service_builder::ServiceContext<()>) -> Self {
-        VFServer::new(&ctx.datacenter, ctx.feature_switches).await
+        VFServer::new(&ctx.datacenter).await
     }
 
     fn register(self: Arc<Self>, routes: &mut tonic::service::RoutesBuilder) {
@@ -30,11 +30,8 @@ impl xai_x_service_builder::XService for VFServer {
 }
 
 impl VFServer {
-    pub(crate) async fn new(
-        datacenter: &str,
-        feature_switches: Arc<xai_feature_switches::FeatureSwitches>,
-    ) -> Self {
-        crate::server_deps::build_prod_server(datacenter, feature_switches).await
+    pub(crate) async fn new(datacenter: &str) -> Self {
+        crate::server_deps::build_prod_server(datacenter).await
     }
 
     pub(crate) fn from_endpoints(
@@ -79,6 +76,7 @@ mod tests {
     use super::*;
     use crate::filter::FilterTweets;
     use crate::hydration::sources::InMemorySources;
+    use crate::params::ClientSwitches;
     use crate::rules::RuleEngine;
     use crate::safety_label_source::lookup::{ManhattanLookup, RemoteSource, TwemcacheLookup};
     use crate::safety_label_source::types::{ManhattanOutcome, TwemcacheOutcome};
@@ -115,7 +113,7 @@ mod tests {
         ));
         let labels = Arc::new(NoLabels);
         VFServer::from_endpoints(
-            EvaluateTweetsEndpoint::new(filter_tweets.clone()),
+            EvaluateTweetsEndpoint::new(filter_tweets.clone(), ClientSwitches::for_tests()),
             FilterTweetsEndpoint::new(filter_tweets, None),
             GetSafetyLabelsEndpoint::new(Arc::new(SafetyLabelSource::new(Arc::new(
                 RemoteSource::new(labels.clone(), labels),

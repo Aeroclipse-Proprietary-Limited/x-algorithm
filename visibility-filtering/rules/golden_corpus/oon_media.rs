@@ -18,7 +18,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropTweetsWithDmcaMediaRule",
+                        "dmca_media/drop/unspecified",
                     ),
                 ),
                 (TimelineHome, Role::NonFollower, allow()),
@@ -31,12 +31,18 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::ContainNsfwMedia, "TweetNsfwUserDropRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_user_tweet_flag/drop/nsfw_media",
+                    ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::Author,
-                    dropped(FilteredReason::ContainNsfwMedia, "TweetNsfwUserDropRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_user_tweet_flag/drop/nsfw_media",
+                    ),
                 ),
             ],
         },
@@ -47,12 +53,18 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::ContainNsfwMedia, "TweetNsfwAdminDropRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_admin_tweet_flag/drop/nsfw_media",
+                    ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::Author,
-                    dropped(FilteredReason::ContainNsfwMedia, "TweetNsfwAdminDropRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_admin_tweet_flag/drop/nsfw_media",
+                    ),
                 ),
             ],
         },
@@ -69,12 +81,18 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::ContainNsfwMedia, "DropNsfwUserAuthorRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_user_author/drop/nsfw_media",
+                    ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::Follower,
-                    dropped(FilteredReason::ContainNsfwMedia, "DropNsfwUserAuthorRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_user_author/drop/nsfw_media",
+                    ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
                 (
@@ -82,7 +100,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::ContainNsfwMedia,
-                        "NsfwSensitiveViewerDropUserRule",
+                        "nsfw_sensitive_viewer_user/drop/nsfw_media",
                     ),
                 ),
                 (ImmersiveExpandedRecommendations, Role::Author, allow()),
@@ -95,12 +113,18 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::ContainNsfwMedia, "DropNsfwAdminAuthorRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_admin_author/drop/nsfw_media",
+                    ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::Follower,
-                    dropped(FilteredReason::ContainNsfwMedia, "DropNsfwAdminAuthorRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_admin_author/drop/nsfw_media",
+                    ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
             ],
@@ -114,7 +138,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::As("in_de", viewer_in_country("de")),
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropTweetsWithGeoRestrictedMediaRule",
+                        "geo_restricted_media/drop/unspecified",
                     ),
                 ),
                 (
@@ -134,7 +158,7 @@ pub(super) fn rows() -> Vec<Row> {
                     ),
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropTweetsWithGeoRestrictedMediaRule",
+                        "geo_restricted_media/drop/unspecified",
                     ),
                 ),
             ],
@@ -148,7 +172,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropTweetsWithGeoRestrictedMediaRule",
+                        "geo_restricted_media/drop/unspecified",
                     ),
                 ),
                 (
@@ -161,7 +185,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::As("in_de", viewer_in_country("de")),
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropTweetsWithGeoRestrictedMediaRule",
+                        "geo_restricted_media/drop/unspecified",
                     ),
                 ),
             ],
@@ -183,7 +207,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::As("in_de", viewer_in_country("de")),
                 dropped(
                     FilteredReason::UnspecifiedReason,
-                    "DropTweetsWithGeoRestrictedMediaRule",
+                    "geo_restricted_media/drop/unspecified",
                 ),
             )],
         },
@@ -195,7 +219,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::NonFollower,
                 dropped(
                     FilteredReason::UnspecifiedReason,
-                    "DropTweetsWithGeoRestrictedMediaRule",
+                    "geo_restricted_media/drop/unspecified",
                 ),
             )],
         },
@@ -210,7 +234,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::As("in_de", viewer_in_country("de")),
                 dropped(
                     FilteredReason::UnspecifiedReason,
-                    "DropTweetsWithGeoRestrictedMediaRule",
+                    "geo_restricted_media/drop/unspecified",
                 ),
             )],
         },

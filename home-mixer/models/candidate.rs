@@ -24,8 +24,6 @@ pub struct PostCandidate {
     pub weighted_score: Option<f64>,
     pub score: Option<f64>,
     #[serde(default)]
-    pub author_policy_zeroed: bool,
-    #[serde(default)]
     pub cold_start_lift_to_rank: Option<u32>,
     pub slate_context: Option<SlateContext>,
     #[serde(default)]

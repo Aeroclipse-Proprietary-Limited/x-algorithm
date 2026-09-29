@@ -10,6 +10,8 @@ macro_rules! using {
 }
 
 pub const NOTICES_ON_TWITTER: &str = rules!("notices-on-x");
+pub const SENSITIVE_MEDIA_APPEAL_PREFIX: &str =
+    "https://x.com/i/safety/report_story_start?source=appealtweet&reported_tweet_id=";
 pub const ENFORCEMENT_OPTIONS: &str = rules!("enforcement-options");
 pub const PUBLIC_INTEREST: &str = rules!("public-interest");
 pub const TWITTER_RULES: &str = rules!("x-rules");

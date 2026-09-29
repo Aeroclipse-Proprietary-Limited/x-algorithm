@@ -1,6 +1,6 @@
 use crate::filter::{FilterOutcome, FilterRequest, FilterTweets};
-use crate::models::{RawCandidate, TweetId};
-use crate::reference_compare::{ReferenceCompareHarness, TweetVerdict};
+use crate::models::{ClientCapability, RawCandidate, TweetId};
+use crate::reference::ReferenceComparator;
 use crate::rules::metrics::{self as ft_metrics, RequestMetricsGuard, Rpc};
 use crate::rules::SafetyLevel;
 use crate::treatment;
@@ -12,13 +12,13 @@ use xai_visibility_filtering_proto as vf_pb;
 
 pub struct FilterTweetsEndpoint {
     filter_tweets: Arc<FilterTweets>,
-    reference_compare: Option<Arc<ReferenceCompareHarness>>,
+    reference_compare: Option<ReferenceComparator>,
 }
 
 impl FilterTweetsEndpoint {
     pub(crate) fn new(
         filter_tweets: Arc<FilterTweets>,
-        reference_compare: Option<Arc<ReferenceCompareHarness>>,
+        reference_compare: Option<ReferenceComparator>,
     ) -> Self {
         Self {
             filter_tweets,
@@ -71,6 +71,7 @@ impl FilterTweetsEndpoint {
             .scope(self.filter_tweets.run(FilterRequest {
                 viewer_id,
                 country_code: req.country_code,
+                client_capability: ClientCapability::default(),
                 safety_level,
                 candidates,
                 rpc: Rpc::FilterTweets,
@@ -88,16 +89,7 @@ impl FilterTweetsEndpoint {
         );
 
         if let Some(verdicts) = reference_compare {
-            verdicts.send(
-                response
-                    .outcomes
-                    .iter()
-                    .map(|outcome| TweetVerdict {
-                        tweet_id: outcome.tweet_id.0,
-                        verdict: outcome.verdict.clone(),
-                    })
-                    .collect(),
-            );
+            verdicts.send(&response.outcomes);
         }
 
         let results = response
@@ -195,7 +187,7 @@ mod tests {
                 Arc::new(InMemorySources::default()),
                 RuleEngine::for_tests(),
             )),
-            Some(harness),
+            Some(harness.into()),
         );
         for viewer_id in [Some(0), Some(42)] {
             endpoint

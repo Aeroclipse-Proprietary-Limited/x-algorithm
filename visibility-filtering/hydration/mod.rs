@@ -6,9 +6,11 @@ pub mod metrics;
 pub(crate) mod plan;
 pub(crate) mod sources;
 mod store;
-pub mod tes_composite;
+pub mod tweet_source;
 
-use crate::models::{HydratedTweetCandidate, PureCore, RawCandidate, TweetId, ViewerFeatures};
+use crate::models::{
+    ClientCapability, HydratedTweetCandidate, PureCore, RawCandidate, TweetId, ViewerFeatures,
+};
 use batch::TweetHydrationBatch;
 pub(crate) use decode::author::fallback_cache as author_fallback_cache;
 pub(crate) use decode::tweet::pure_core_fallback_cache;
@@ -45,6 +47,7 @@ pub enum Hydrator {
     ConversationControl,
     TweetSafetyLabels,
     ViewerProfile,
+    ViewerLabels,
     AuthorSafety,
     AuthorLabels,
     Follows,
@@ -106,6 +109,7 @@ impl Hydrators {
 pub(crate) struct HydrationRequest<'a> {
     viewer_id: Option<u64>,
     country_code: Option<String>,
+    client_capability: ClientCapability,
     raw_candidates: &'a [RawCandidate],
 }
 
@@ -113,11 +117,13 @@ impl<'a> HydrationRequest<'a> {
     pub(crate) fn new(
         viewer_id: Option<u64>,
         country_code: Option<String>,
+        client_capability: ClientCapability,
         raw_candidates: &'a [RawCandidate],
     ) -> Self {
         Self {
             viewer_id,
             country_code,
+            client_capability,
             raw_candidates,
         }
     }

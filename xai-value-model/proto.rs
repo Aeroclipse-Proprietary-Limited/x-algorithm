@@ -84,7 +84,6 @@ impl CandidateScoringInputs {
                 .min_video_duration_ms
                 .is_some_and(|ms| ms > min_video_duration_ms),
             quoted_vqv_eligible: true,
-            author_policy_zeroed: c.author_policy_zeroed,
             cold_start_lift_to_rank: c.cold_start_lift_to_rank,
             weighted_score: c.weighted_score,
         }

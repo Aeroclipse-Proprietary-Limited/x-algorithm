@@ -1,9 +1,9 @@
 use crate::hydration::{Hydrator, Hydrators};
 use crate::models::{
-    tweet_timestamp_ms, AuthorFeatures, AuthorLabelSet, HydratedTweetCandidate, SafetyLabelMap,
-    TweetFeatures, Viewer, ViewerFeatures, ViewerProfile,
+    tweet_timestamp_ms, AuthorFeatures, AuthorLabelSet, ClientCapability, HydratedTweetCandidate,
+    SafetyLabelMap, TweetFeatures, Viewer, ViewerFeatures, ViewerProfile,
 };
-use crate::params::NsfwGatingCountries;
+use crate::params::{CountryList, CountryLists};
 use xai_core_entities::entities::ConversationControl;
 
 pub(crate) struct RuleContext<'a> {
@@ -16,20 +16,20 @@ pub(crate) struct RuleContext<'a> {
 pub(super) struct CoreFacts<'a> {
     viewer: &'a ViewerFeatures,
     candidate: &'a HydratedTweetCandidate,
-    nsfw_gating_countries: &'a NsfwGatingCountries,
+    country_lists: &'a CountryLists,
 }
 
 impl<'a> RuleContext<'a> {
     pub(super) fn new(
         viewer: &'a ViewerFeatures,
         candidate: &'a HydratedTweetCandidate,
-        nsfw_gating_countries: &'a NsfwGatingCountries,
+        country_lists: &'a CountryLists,
     ) -> Self {
         Self {
             facts: CoreFacts {
                 viewer,
                 candidate,
-                nsfw_gating_countries,
+                country_lists,
             },
             #[cfg(test)]
             hydrated: Hydrators::all(),
@@ -108,6 +108,18 @@ impl<'a> RuleContext<'a> {
     }
 
     #[inline]
+    pub(super) fn viewer_has_age_verified_18_label(&self) -> bool {
+        self.reads(Hydrator::ViewerLabels);
+        match &self.facts.viewer.viewer {
+            Viewer::LoggedIn {
+                has_age_verified_18_label,
+                ..
+            } => *has_age_verified_18_label,
+            Viewer::LoggedOut => false,
+        }
+    }
+
+    #[inline]
     pub(super) fn viewer_profile(&self) -> Option<&'a ViewerProfile> {
         self.reads(Hydrator::ViewerProfile);
         match &self.facts.viewer.viewer {
@@ -134,6 +146,11 @@ impl<'a> CoreFacts<'a> {
     }
 
     #[inline]
+    pub(super) fn client_capability(self) -> ClientCapability {
+        self.viewer.client_capability
+    }
+
+    #[inline]
     pub(super) fn is_author_viewer(self) -> bool {
         self.viewer_id() == Some(self.candidate.author_id)
     }
@@ -144,7 +161,7 @@ impl<'a> CoreFacts<'a> {
     }
 
     #[inline]
-    pub(super) fn nsfw_gating_country(self, country_code: &str) -> bool {
-        self.nsfw_gating_countries.contains(country_code)
+    pub(super) fn in_country_list(self, list: CountryList, country_code: &str) -> bool {
+        self.country_lists.contains(list, country_code)
     }
 }

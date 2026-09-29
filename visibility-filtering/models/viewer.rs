@@ -3,6 +3,7 @@ pub enum Viewer {
     LoggedIn {
         id: u64,
         profile: ViewerProfile,
+        has_age_verified_18_label: bool,
     },
     #[default]
     LoggedOut,
@@ -32,6 +33,7 @@ pub struct ViewerProfile {
     pub allows_sensitive_media: bool,
     pub viewer_age: ViewerAge,
     pub has_verified_badge: bool,
+    pub has_idv_premium: bool,
     pub is_read_only: bool,
     pub account_country_code: Option<String>,
 }
@@ -46,17 +48,55 @@ impl ViewerProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray)]
+pub enum VerifyBlurSupport {
+    #[default]
+    Unsupported,
+    IosNeedsUpdate,
+    AndroidNeedsUpdate,
+    Supported,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClientCapability {
+    pub verify_blur_support: Option<VerifyBlurSupport>,
+    pub modern_blur: bool,
+    pub stale_tweet_limits: bool,
+    pub gore_blur_ignores_settings: bool,
+    pub fosnr_rules: bool,
+    pub fosnr_fallback_drops: bool,
+}
+
+impl Default for ClientCapability {
+    fn default() -> Self {
+        Self {
+            verify_blur_support: Some(VerifyBlurSupport::default()),
+            modern_blur: false,
+            stale_tweet_limits: true,
+            gore_blur_ignores_settings: false,
+            fosnr_rules: true,
+            fosnr_fallback_drops: false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ViewerFeatures {
     pub viewer: Viewer,
     pub country_code: Option<String>,
+    pub client_capability: ClientCapability,
 }
 
 impl ViewerFeatures {
-    pub fn from_request(viewer: Viewer, country_code: Option<String>) -> Self {
+    pub fn from_request(
+        viewer: Viewer,
+        country_code: Option<String>,
+        client_capability: ClientCapability,
+    ) -> Self {
         Self {
             viewer,
             country_code: country_code.map(|c| c.to_ascii_lowercase()),
+            client_capability,
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::hydration::sources::Sources;
 use crate::hydration::{HydrationOutput, HydrationRequest, Hydrators};
-use crate::models::{RawCandidate, TweetId, Verdict};
+use crate::models::{ClientCapability, RawCandidate, TweetId, Verdict};
 use crate::rules::metrics::{self as ft_metrics, Rpc};
 use crate::rules::{Evaluation, RuleEngine, SafetyLevel};
 use std::collections::HashMap;
@@ -11,6 +11,7 @@ use xai_visibility_filtering_proto as vf_pb;
 pub struct FilterRequest {
     pub viewer_id: Option<u64>,
     pub country_code: Option<String>,
+    pub client_capability: ClientCapability,
     pub safety_level: SafetyLevel,
     pub candidates: Vec<RawCandidate>,
     pub rpc: Rpc,
@@ -39,6 +40,8 @@ pub struct FilterResponse {
 pub struct FilterTweets {
     sources: Arc<dyn Sources>,
     rule_engine: RuleEngine,
+    #[cfg(test)]
+    pub(crate) client_capabilities: std::sync::Mutex<Vec<ClientCapability>>,
 }
 
 impl FilterTweets {
@@ -46,41 +49,73 @@ impl FilterTweets {
         Self {
             sources,
             rule_engine,
+            #[cfg(test)]
+            client_capabilities: std::sync::Mutex::default(),
         }
     }
 
     pub async fn run(&self, request: FilterRequest) -> FilterResponse {
+        let hydrated = self.hydrate(request).await;
+        self.evaluate(hydrated)
+    }
+
+    pub(crate) async fn hydrate(&self, request: FilterRequest) -> HydratedRequest {
+        #[cfg(test)]
+        self.client_capabilities
+            .lock()
+            .unwrap()
+            .push(request.client_capability);
         let started = Instant::now();
         let hydration = self
             .rule_engine
             .plan(request.safety_level)
             .hydrate(
                 &*self.sources,
-                HydrationRequest::new(request.viewer_id, request.country_code, &request.candidates),
+                HydrationRequest::new(
+                    request.viewer_id,
+                    request.country_code,
+                    request.client_capability,
+                    &request.candidates,
+                ),
             )
             .await;
         let hydrated_at = Instant::now();
         ft_metrics::record_phase(request.rpc, "hydration", hydrated_at - started);
-        let HydrationOutput {
-            viewer_features,
-            candidates: hydrated_candidates,
-            safety_labels,
-            failed_ids,
-            pure_cores,
-        } = hydration;
+        HydratedRequest {
+            safety_level: request.safety_level,
+            rpc: request.rpc,
+            candidates: request.candidates,
+            hydration,
+        }
+    }
+
+    pub(crate) fn evaluate(&self, hydrated: HydratedRequest) -> FilterResponse {
+        let evaluating = Instant::now();
+        let HydratedRequest {
+            safety_level,
+            rpc,
+            candidates,
+            hydration:
+                HydrationOutput {
+                    viewer_features,
+                    candidates: hydrated_candidates,
+                    safety_labels,
+                    failed_ids,
+                    pure_cores,
+                },
+        } = hydrated;
         let evaluated: HashMap<TweetId, Evaluation> = hydrated_candidates
             .iter()
             .map(|candidate| {
                 (
                     TweetId(candidate.tweet_id),
                     self.rule_engine
-                        .evaluate(request.safety_level, &viewer_features, candidate),
+                        .evaluate(safety_level, &viewer_features, candidate),
                 )
             })
             .collect();
 
-        let outcomes: Vec<FilterOutcome> = request
-            .candidates
+        let outcomes: Vec<FilterOutcome> = candidates
             .iter()
             .map(|candidate| {
                 let (verdict, rested_on, status) = match evaluated.get(&candidate.tweet_id) {
@@ -115,10 +150,17 @@ impl FilterTweets {
             })
             .collect();
 
-        ft_metrics::record_phase(request.rpc, "post_hydration", hydrated_at.elapsed());
+        ft_metrics::record_phase(rpc, "post_hydration", evaluating.elapsed());
 
         FilterResponse { outcomes }
     }
+}
+
+pub(crate) struct HydratedRequest {
+    safety_level: SafetyLevel,
+    rpc: Rpc,
+    pub(crate) candidates: Vec<RawCandidate>,
+    pub(crate) hydration: HydrationOutput,
 }
 
 #[cfg(test)]
@@ -151,6 +193,7 @@ mod tests {
             service(&sources).run(FilterRequest {
                 viewer_id: Some(50),
                 country_code: None,
+                client_capability: ClientCapability::default(),
                 safety_level: SafetyLevel::TimelineHome,
                 candidates: vec![candidate(1, None), candidate(2, Some(20))],
                 rpc: Rpc::FilterTweets,
@@ -198,6 +241,7 @@ mod tests {
                 .run(FilterRequest {
                     viewer_id,
                     country_code: None,
+                    client_capability: ClientCapability::default(),
                     safety_level: SafetyLevel::TimelineHomeHydration,
                     candidates: vec![candidate(1, None), candidate(2, None), candidate(3, None)],
                     rpc: Rpc::FilterTweets,
@@ -215,14 +259,14 @@ mod tests {
                     EvaluationStatus::Evaluated,
                     limited(
                         LimitedEngagementReason::RootAuthorBlockedViewer,
-                        "RootAuthorBlocksViewerLimitedActionsRule",
+                        "blocked_viewer/limited_engagement/root_author_blocked_viewer",
                     ),
                 ),
                 (
                     EvaluationStatus::Evaluated,
                     limited(
                         LimitedEngagementReason::BlockedViewer,
-                        "BlockedViewerLimitedActionsRule",
+                        "blocked_viewer/limited_engagement",
                     ),
                 ),
                 (EvaluationStatus::Evaluated, allow()),
@@ -234,7 +278,10 @@ mod tests {
         );
         assert_eq!(
             sources.selects(),
-            [vec![EdgeQuery::reverse(Graph::Blocks, vec![10, 20, 30])]]
+            [vec![
+                EdgeQuery::forward(Graph::Follows, vec![10, 20]),
+                EdgeQuery::reverse(Graph::Blocks, vec![10, 20, 30]),
+            ]]
         );
     }
     #[tokio::test]
@@ -251,6 +298,7 @@ mod tests {
             .run(FilterRequest {
                 viewer_id: None,
                 country_code: None,
+                client_capability: ClientCapability::default(),
                 safety_level: SafetyLevel::TimelineHome,
                 candidates: vec![
                     candidate(2, Some(20)),

@@ -1,4 +1,4 @@
-// mirrored from config feature-switch defaults; last sync 2026-09-25T16:24:28Z
+// mirrored from config feature-switch defaults; last sync 2026-09-28T16:00:35Z
 use xai_feature_switches::param;
 
 param!(
@@ -242,6 +242,13 @@ param!(
 );
 
 param!(
+    PhoenixRetrievalExcludeSeenPosts,
+    bool,
+    "rust_home_mixer_phoenix_retrieval_exclude_seen_posts",
+    false
+);
+
+param!(
     PhoenixRankerNewUserInferenceClusterId,
     String,
     "rust_home_mixer_phoenix_ranker_new_user_inference_cluster_id",
@@ -319,7 +326,7 @@ param!(
     "rust_home_mixer_video_open_weight",
     0.07
 );
-param!(ClickWeight, f64, "rust_home_mixer_click_weight", 0.4);
+param!(ClickWeight, f64, "rust_home_mixer_click_weight", 0.3);
 param!(OpenLinkWeight, f64, "rust_home_mixer_open_link_weight", 0.2);
 param!(
     ProfileClickWeight,
@@ -377,14 +384,14 @@ param!(
     ContClickDwellTimeWeight,
     f64,
     "rust_home_mixer_cont_click_dwell_time_weight",
-    0.0
+    0.4
 );
 
 param!(
     NotInterestedWeight,
     f64,
     "rust_home_mixer_not_interested_weight",
-    -43.2
+    -47.52
 );
 param!(
     BlockAuthorWeight,
@@ -702,12 +709,6 @@ param!(
     String,
     "rust_home_mixer_sid_server_endpoint",
     "xds://xai-recsys-sid-v8-root.prod.recsys-infra:grpc"
-);
-param!(
-    UseEngagementCounterViewCountForImpressionBoost,
-    bool,
-    "rust_home_mixer_use_engagement_counter_view_count_for_impression_boost",
-    true
 );
 param!(
     EnableAdsSource,

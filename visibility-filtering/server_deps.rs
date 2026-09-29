@@ -6,9 +6,8 @@ use crate::filter::{EvaluationStatus, FilterRequest, FilterResponse, FilterTweet
 use crate::filter_tweets::FilterTweetsEndpoint;
 use crate::get_safety_labels::GetSafetyLabelsEndpoint;
 use crate::hydration::sources::ProdSources;
-use crate::hydration::tes_composite::ProdTweetForVisibilitySource;
-use crate::models::{RawCandidate, TweetId};
-use crate::reference_compare::ReferenceCompareHarness;
+use crate::hydration::tweet_source::TweetSource;
+use crate::models::{ClientCapability, RawCandidate, TweetId};
 use crate::rules::metrics::Rpc;
 use crate::rules::SafetyLevel;
 use crate::safety_label_source::lookup::RemoteSource;
@@ -31,7 +30,6 @@ use xai_core_entities::rpc_constants::{GizmoduckRpcConstants, RpcConstants, TESR
 use xai_core_entities::s2s::{S2S_CHAIN_PATH, S2S_CLIENT_ID, S2S_CRT_PATH, S2S_KEY_PATH};
 use xai_core_entities::tweet_entity_service_client::ProdTESClient;
 use xai_strato::StratoGrpc;
-use xai_visibility_filtering::vf_client::{StratoVfClient, VfClient};
 use xai_x_rpc::balanced_channel::LbPolicy;
 use xai_x_rpc::grpc_client::{ChannelBuilder, TlsMode};
 use xai_x_rpc::retry::RetryConfig;
@@ -46,7 +44,7 @@ const CLIENT_INIT_RETRY_BUDGET: Duration = Duration::from_secs(240);
 const CLIENT_INIT_MAX_BACKOFF: Duration = Duration::from_secs(15);
 const CLIENT_INIT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
-async fn init_client_with_retry<T, E, Fut>(
+pub(crate) async fn init_client_with_retry<T, E, Fut>(
     client: &str,
     deadline: tokio::time::Instant,
     mut build: impl FnMut() -> Fut,
@@ -104,10 +102,7 @@ where
     clippy::expect_used,
     reason = "startup fail-fast: init failure is fatal"
 )]
-pub async fn build_prod_server(
-    datacenter: &str,
-    feature_switches: Arc<xai_feature_switches::FeatureSwitches>,
-) -> VFServer {
+pub async fn build_prod_server(datacenter: &str) -> VFServer {
     info!("Initializing prod clients for datacenter={}", datacenter);
 
     let init_deadline = tokio::time::Instant::now() + CLIENT_INIT_RETRY_BUDGET;
@@ -273,8 +268,6 @@ pub async fn build_prod_server(
         "Cache client connected to {CACHE_PATH}"
     );
 
-    let reference_compare = build_reference_compare_harness(datacenter, init_deadline).await;
-
     warm_cache(&twemcache).await;
     warm_manhattan(mh_label_client.as_ref()).await;
 
@@ -289,9 +282,9 @@ pub async fn build_prod_server(
     let remote = Arc::new(remote);
     let safety_label_source = Arc::new(SafetyLabelSource::new(remote));
 
-    let tweet_source = Arc::new(ProdTweetForVisibilitySource {
+    let tweet_source = TweetSource {
         grpc_client: tes_client.grpc_client.clone(),
-    });
+    };
     let sources = ProdSources::new(
         tes_client,
         tweet_source,
@@ -303,15 +296,29 @@ pub async fn build_prod_server(
         fallback_cache,
         pure_core_fallback_cache,
     );
-    let gating_countries = Arc::new(crate::params::NsfwGatingCountries::starting_at_default());
-    let fs_path = crate::config::fs_path();
-    gating_countries.refresh_and_check_drift(&feature_switches, &fs_path);
-    gating_countries.spawn_refresh(feature_switches, fs_path);
-    let rule_engine = crate::rules::RuleEngine::with_nsfw_gating_countries(gating_countries);
+    let stats = xai_stats_receiver::global_stats_receiver();
+    let mut switch_files = crate::params::SwitchFiles::beside(&crate::config::fs_path());
+    let feature_switches = Arc::new(arc_swap::ArcSwap::from_pointee(
+        switch_files
+            .load(stats.as_deref())
+            .expect("files that each built an engine build one together"),
+    ));
+    let country_lists = Arc::new(crate::params::CountryLists::starting_at_default());
+    country_lists.refresh(&feature_switches.load());
+    let client_switches = crate::params::ClientSwitches::new(Arc::clone(&feature_switches));
+    crate::params::spawn_refresh(
+        switch_files,
+        feature_switches,
+        Arc::clone(&country_lists),
+        stats,
+    );
+    let rule_engine = crate::rules::RuleEngine::with_country_lists(country_lists);
     let (home_rule_count, recommendations_rule_count) = rule_engine.rule_counts();
     let filter_tweets = Arc::new(FilterTweets::new(Arc::new(sources), rule_engine));
 
     warm_filter_tweets(&filter_tweets).await;
+    let reference_compare =
+        crate::reference::build(datacenter, init_deadline, &filter_tweets, &client_switches).await;
 
     info!(
         hydrator_count = 5,
@@ -324,53 +331,10 @@ pub async fn build_prod_server(
     );
 
     VFServer::from_endpoints(
-        EvaluateTweetsEndpoint::new(filter_tweets.clone()),
+        EvaluateTweetsEndpoint::new(filter_tweets.clone(), client_switches),
         FilterTweetsEndpoint::new(filter_tweets, reference_compare),
         GetSafetyLabelsEndpoint::new(safety_label_source),
     )
-}
-
-async fn build_reference_compare_harness(
-    datacenter: &str,
-    init_deadline: tokio::time::Instant,
-) -> Option<Arc<ReferenceCompareHarness>> {
-    #[expect(clippy::panic, reason = "startup fail-fast on misconfiguration")]
-    let should_build = crate::reference_compare::should_build_harness(
-        crate::config::dual_call_harness_enabled(),
-        std::env::var("APP_ENV").ok().as_deref(),
-    )
-    .unwrap_or_else(|misconfiguration| panic!("{misconfiguration}"));
-    if !should_build {
-        return None;
-    }
-
-    let client_id = format!(
-        "visibility-filtering-service.{}",
-        std::env::var("APP_ENV").unwrap_or_else(|_| "staging".to_string())
-    );
-    #[expect(
-        clippy::expect_used,
-        reason = "startup fail-fast: init failure is fatal"
-    )]
-    let strato: Arc<dyn VfClient + Send + Sync> = Arc::new(
-        init_client_with_retry("strato_vf", init_deadline, || {
-            let client_id = client_id.clone();
-            async move {
-                StratoVfClient::new(
-                    S2S_CHAIN_PATH.clone(),
-                    S2S_CRT_PATH.clone(),
-                    S2S_KEY_PATH.clone(),
-                    client_id,
-                    datacenter.to_string(),
-                )
-                .await
-                .map_err(|e| e.to_string())
-            }
-        })
-        .await
-        .expect("Failed to initialize Strato VF client (reference comparator)"),
-    );
-    Some(Arc::new(ReferenceCompareHarness::new(strato, datacenter)))
 }
 
 const CACHE_WARM_REQUEST_TIMEOUT_MS: u64 = 500;
@@ -515,6 +479,7 @@ fn warm_filter_tweets_request() -> FilterRequest {
     FilterRequest {
         viewer_id: None,
         country_code: None,
+        client_capability: ClientCapability::default(),
         safety_level: SafetyLevel::TimelineHomeRecommendations,
         candidates: vec![RawCandidate {
             tweet_id: TweetId(WARM_FILTER_TWEETS_TWEET_ID),

@@ -1,29 +1,34 @@
 use crate::filter::{EvaluationStatus, FilterOutcome, FilterRequest, FilterTweets};
 use crate::filter_tweets::normalize_viewer_id;
-use crate::hydration::Hydrators;
-use crate::models::{RawCandidate, TweetId, Verdict};
+use crate::models::{RawCandidate, TweetId};
+use crate::params::ClientSwitches;
+use crate::retweet;
 use crate::rules::metrics::{self as ft_metrics, RequestMetricsGuard, Rpc};
 use crate::rules::SafetyLevel;
 use crate::treatment;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use vf_pb::tweet_evaluation::Outcome;
+use xai_twittercontext_proto::TwitterContextViewer;
 use xai_visibility_filtering_proto as vf_pb;
 use xai_x_thrift::safety_level::SafetyLevel as ThriftLevel;
 
 const REQUESTS: &str = "evaluate_tweets_requests";
 const LATENCY_MS: &str = "evaluate_tweets_latency_ms";
 const BATCH_SIZE: &str = "evaluate_tweets_batch_size";
-const RETWEET_SOURCES: &str = "evaluate_tweets_retweet_sources";
 
 pub struct EvaluateTweetsEndpoint {
     filter_tweets: Arc<FilterTweets>,
+    client_switches: ClientSwitches,
 }
 
 impl EvaluateTweetsEndpoint {
-    pub(crate) fn new(filter_tweets: Arc<FilterTweets>) -> Self {
-        Self { filter_tweets }
+    pub(crate) fn new(filter_tweets: Arc<FilterTweets>, client_switches: ClientSwitches) -> Self {
+        Self {
+            filter_tweets,
+            client_switches,
+        }
     }
 
     pub async fn handle(
@@ -36,7 +41,11 @@ impl EvaluateTweetsEndpoint {
             entered,
             crate::filter_tweets::parse_grpc_timeout(request.metadata()),
         );
-        match context.scope(self.handle_inner(request.into_inner())).await {
+        let twitter_context = xai_twittercontext::extract_twitter_context(request.metadata());
+        match context
+            .scope(self.handle_inner(request.into_inner(), twitter_context))
+            .await
+        {
             Ok(response) => {
                 request_metrics.mark_success();
                 Ok(Response::new(response))
@@ -51,6 +60,7 @@ impl EvaluateTweetsEndpoint {
     async fn handle_inner(
         &self,
         req: vf_pb::EvaluateTweetsRequest,
+        twitter_context: Option<TwitterContextViewer>,
     ) -> Result<vf_pb::EvaluateTweetsResponse, Status> {
         let level = ThriftLevel(req.safety_level);
         if !ThriftLevel::ENUM_VALUES.contains(&level) {
@@ -74,93 +84,23 @@ impl EvaluateTweetsEndpoint {
             })
             .collect();
         let viewer_id = normalize_viewer_id(req.viewer_id);
-        let outcomes = self
-            .filter_tweets
-            .run(FilterRequest {
+        let client_capability = self.client_switches.resolve(
+            twitter_context.as_ref(),
+            viewer_id,
+            req.country_code.as_deref(),
+        );
+        let outcomes = retweet::evaluate_merging_sources(
+            &self.filter_tweets,
+            FilterRequest {
                 viewer_id,
-                country_code: req.country_code.clone(),
+                country_code: req.country_code,
+                client_capability,
                 safety_level,
                 candidates,
                 rpc: Rpc::EvaluateTweets,
-            })
-            .await
-            .outcomes;
-        let is_evaluated_retweet = |outcome: &FilterOutcome| {
-            outcome.status == EvaluationStatus::Evaluated && outcome.source_tweet_id.is_some()
-        };
-        let outcomes = if !outcomes.iter().any(is_evaluated_retweet) {
-            outcomes
-        } else {
-            let requested: HashSet<TweetId> =
-                outcomes.iter().map(|outcome| outcome.tweet_id).collect();
-            let (in_batch, fetched): (HashSet<TweetId>, HashSet<TweetId>) = outcomes
-                .iter()
-                .filter(|outcome| outcome.status == EvaluationStatus::Evaluated)
-                .filter_map(|outcome| outcome.source_tweet_id)
-                .partition(|source_id| requested.contains(source_id));
-            ft_metrics::incr_nonzero(
-                RETWEET_SOURCES,
-                &[("outcome", "in_batch")],
-                in_batch.len() as u64,
-            );
-            ft_metrics::incr_nonzero(
-                RETWEET_SOURCES,
-                &[("outcome", "fetched")],
-                fetched.len() as u64,
-            );
-            let fetched_outcomes = if fetched.is_empty() {
-                Vec::new()
-            } else {
-                self.filter_tweets
-                    .run(FilterRequest {
-                        viewer_id,
-                        country_code: req.country_code,
-                        safety_level,
-                        candidates: fetched
-                            .into_iter()
-                            .map(|tweet_id| RawCandidate {
-                                tweet_id,
-                                request_author_id: None,
-                            })
-                            .collect(),
-                        rpc: Rpc::EvaluateTweets,
-                    })
-                    .await
-                    .outcomes
-            };
-            let sources: HashMap<TweetId, (EvaluationStatus, Verdict, Hydrators)> = outcomes
-                .iter()
-                .filter(|outcome| in_batch.contains(&outcome.tweet_id))
-                .map(|outcome| {
-                    (
-                        outcome.tweet_id,
-                        (outcome.status, outcome.verdict.clone(), outcome.rested_on),
-                    )
-                })
-                .chain(fetched_outcomes.into_iter().map(|outcome| {
-                    (
-                        outcome.tweet_id,
-                        (outcome.status, outcome.verdict, outcome.rested_on),
-                    )
-                }))
-                .collect();
-            outcomes
-                .into_iter()
-                .map(|mut outcome| {
-                    if is_evaluated_retweet(&outcome) {
-                        match outcome.source_tweet_id.and_then(|id| sources.get(&id)) {
-                            Some((EvaluationStatus::Evaluated, source, source_rested_on)) => {
-                                outcome.verdict =
-                                    Verdict::merge_retweet_verdict(outcome.verdict, source);
-                                outcome.rested_on = outcome.rested_on.union(*source_rested_on);
-                            }
-                            _ => outcome.status = EvaluationStatus::Failed,
-                        }
-                    }
-                    outcome
-                })
-                .collect()
-        };
+            },
+        )
+        .await;
         ft_metrics::record_verdicts(
             Rpc::EvaluateTweets,
             safety_level,
@@ -187,12 +127,12 @@ impl EvaluateTweetsEndpoint {
                             status: EvaluationStatus::Evaluated,
                             verdict,
                             ..
-                        }) => match treatment::thrift_action(verdict, safety_level) {
-                            Some(action) => match xai_x_thrift::serialize_compact(&action) {
-                                Ok(bytes) => Outcome::ActionThriftCompact(bytes.into()),
-                                Err(_) => Outcome::Failed(vf_pb::Failed {}),
-                            },
-                            None => Outcome::NotEvaluated(vf_pb::NotEvaluated {}),
+                        }) => match xai_x_thrift::serialize_compact(&treatment::thrift_action(
+                            verdict,
+                            safety_level,
+                        )) {
+                            Ok(bytes) => Outcome::ActionThriftCompact(bytes.into()),
+                            Err(_) => Outcome::Failed(vf_pb::Failed {}),
                         },
                         _ => Outcome::Failed(vf_pb::Failed {}),
                     }
@@ -212,6 +152,7 @@ mod tests {
     use super::*;
     use crate::hydration::plan::Source;
     use crate::hydration::sources::InMemorySources;
+    use crate::models::VerifyBlurSupport;
     use crate::rules::RuleEngine;
     use xai_core_entities::entities::{
         GizmoduckUser, GizmoduckUserResult, PureCoreData, Safety, UserResponseState,
@@ -246,10 +187,10 @@ mod tests {
                     },
                 ),
         );
-        let endpoint = EvaluateTweetsEndpoint::new(Arc::new(FilterTweets::new(
-            sources.clone(),
-            RuleEngine::for_tests(),
-        )));
+        let endpoint = EvaluateTweetsEndpoint::new(
+            Arc::new(FilterTweets::new(sources.clone(), RuleEngine::for_tests())),
+            ClientSwitches::for_tests(),
+        );
         for (level, code) in [
             (0, tonic::Code::Unimplemented),
             (4, tonic::Code::Unimplemented),
@@ -279,10 +220,13 @@ mod tests {
         ];
         for (level, action) in [
             (
-                16,
+                ThriftLevel::FILTER_ALL.0,
                 Action::Drop(action::Drop::new(Some(DropReason::Unspecified(true)), None)),
             ),
-            (82, Action::Allow(action::Allow::new())),
+            (
+                ThriftLevel::TIMELINE_HOME_HYDRATION.0,
+                Action::Allow(action::Allow::new()),
+            ),
         ] {
             let response = endpoint
                 .handle(Request::new(vf_pb::EvaluateTweetsRequest {
@@ -353,6 +297,61 @@ mod tests {
                     .map(|r| r.outcome.unwrap())
                     .collect::<Vec<_>>(),
                 outcomes
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_forwarded_client_reaches_both_passes_and_no_header_gets_the_defaults() {
+        use crate::models::ClientCapability;
+        use crate::rules::fixtures::CLIENT_CLASSES;
+        let sources = Arc::new(
+            InMemorySources::default()
+                .pure_core(
+                    4,
+                    PureCoreData {
+                        author_id: 40,
+                        source_tweet_id: Some(6),
+                        ..Default::default()
+                    },
+                )
+                .tweet(6, 60),
+        );
+        let filter_tweets = Arc::new(FilterTweets::new(sources, RuleEngine::for_tests()));
+        let endpoint =
+            EvaluateTweetsEndpoint::new(Arc::clone(&filter_tweets), ClientSwitches::for_tests());
+        let class = CLIENT_CLASSES
+            .iter()
+            .find(|class| {
+                class.capability.verify_blur_support == Some(VerifyBlurSupport::IosNeedsUpdate)
+            })
+            .unwrap();
+        let header = xai_twittercontext::hydrate_twitter_context(&TwitterContextViewer {
+            client_application_id: class.app_id,
+            user_agent: class.user_agent.into(),
+            ..TwitterContextViewer::default()
+        })
+        .unwrap();
+        for (header, expected) in [
+            (Some(header), class.capability),
+            (None, ClientCapability::default()),
+        ] {
+            let mut request = Request::new(vf_pb::EvaluateTweetsRequest {
+                safety_level: ThriftLevel::TIMELINE_HOME_HYDRATION.0,
+                viewer_id: Some(1),
+                tweets: vec![vf_pb::TweetData {
+                    tweet_id: 4,
+                    quote_context: None,
+                }],
+                ..Default::default()
+            });
+            if let Some(header) = header {
+                request.metadata_mut().insert("twittercontext", header);
+            }
+            endpoint.handle(request).await.unwrap();
+            assert_eq!(
+                std::mem::take(&mut *filter_tweets.client_capabilities.lock().unwrap()),
+                [expected; 2]
             );
         }
     }

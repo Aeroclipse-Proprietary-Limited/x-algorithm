@@ -1,11 +1,11 @@
 use xai_visibility_filtering::models::FilteredReason;
-use xai_x_thrift::action::InterstitialReason;
+use xai_x_thrift::action::{InterstitialAction, InterstitialReason};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Verdict {
     Withheld(Decided<Withholding>),
     Shown {
-        media: Option<Decided<MediaInterstitial>>,
+        media: Option<Decided<MediaRestriction>>,
         engagement: Option<Decided<LimitedEngagement>>,
     },
 }
@@ -18,101 +18,82 @@ pub struct Decided<T> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Withholding {
-    Drop(FilteredReason),
+    Drop(DropReason),
     Tombstone(TombstoneReason),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DropReason {
+    Legacy(FilteredReason),
+    NsfwViewer(NsfwViewerDropReason),
+}
+
+impl DropReason {
+    pub fn legacy(&self) -> &FilteredReason {
+        match self {
+            Self::Legacy(reason) => reason,
+            Self::NsfwViewer(_) => &FilteredReason::ContainNsfwMedia,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum NsfwViewerDropReason {
+    IsUnderage,
+    HasNoStatedAge,
+    LoggedOut,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MediaRestriction {
+    MediaInterstitial(MediaInterstitial),
+    NsfwInterstitial,
+}
+
+impl MediaRestriction {
+    pub fn legacy(&self) -> &FilteredReason {
+        match self {
+            Self::MediaInterstitial(blur) => &blur.legacy,
+            Self::NsfwInterstitial => &FilteredReason::ContainNsfwMedia,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MediaInterstitial {
     pub legacy: FilteredReason,
     pub reason: InterstitialReason,
+    pub prompt: Option<InterstitialAction>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LimitedEngagement(pub LimitedEngagementReason);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "constructed once a policy has a Tombstone clause")
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum TombstoneReason {
+    SensitiveViewerAgeVerification,
+    UpdateAppIos,
+    UpdateAppAndroid,
     LocalRegulations,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum LimitedEngagementReason {
     ConversationControl,
     ReadonlyViewer,
     BlockedViewer,
     RootAuthorBlockedViewer,
+    StaleTweet,
 }
 
 impl Verdict {
-    pub fn merge_retweet_verdict(retweet: Verdict, source: &Verdict) -> Verdict {
-        match (&retweet, source) {
-            (_, Verdict::Withheld(_)) => source.clone(),
-            (Verdict::Withheld(_), _) => retweet,
-            (
-                Verdict::Shown {
-                    media: None,
-                    engagement: None,
-                },
-                _,
-            ) => source.clone(),
-            _ => retweet,
-        }
-    }
-
     pub fn unresolved_author() -> Self {
         Self::Withheld(Decided {
-            value: Withholding::Drop(FilteredReason::UnspecifiedReason),
+            value: Withholding::Drop(DropReason::Legacy(FilteredReason::UnspecifiedReason)),
             by: "unresolved_author_id",
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn merge_retweet_verdict_prefers_withheld_source_then_restricted_retweet() {
-        let dropped = Verdict::Withheld(Decided {
-            value: Withholding::Drop(FilteredReason::AuthorIsSuspended),
-            by: "SuspendedAuthorRule",
-        });
-        let blurred = Verdict::Shown {
-            media: Some(Decided {
-                value: MediaInterstitial {
-                    legacy: FilteredReason::ContainNsfwMedia,
-                    reason: InterstitialReason::Sensitive(true),
-                },
-                by: "NsfwUserInterstitialRule",
-            }),
-            engagement: None,
-        };
-        let limited = Verdict::Shown {
-            media: None,
-            engagement: Some(Decided {
-                value: LimitedEngagement(LimitedEngagementReason::ConversationControl),
-                by: "LimitRepliesByInvitationConversationRule",
-            }),
-        };
-        let unrestricted = Verdict::Shown {
-            media: None,
-            engagement: None,
-        };
-        for (retweet, source, merged) in [
-            (&Verdict::unresolved_author(), &dropped, &dropped),
-            (&dropped, &limited, &dropped),
-            (&unrestricted, &limited, &limited),
-            (&blurred, &limited, &blurred),
-        ] {
-            assert_eq!(
-                Verdict::merge_retweet_verdict(retweet.clone(), source),
-                *merged
-            );
-        }
     }
 }

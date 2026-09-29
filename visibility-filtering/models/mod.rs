@@ -11,10 +11,12 @@ pub use conversation_control::ConversationControlFeatures;
 pub use safety_labels::{SafetyLabelMap, SafetyLabelType};
 pub use tweet::{MediaFeature, NsfwFeature, TweetFeatures};
 pub use verdict::{
-    Decided, LimitedEngagement, LimitedEngagementReason, MediaInterstitial, TombstoneReason,
-    Verdict, Withholding,
+    Decided, DropReason, LimitedEngagement, LimitedEngagementReason, MediaInterstitial,
+    MediaRestriction, NsfwViewerDropReason, TombstoneReason, Verdict, Withholding,
 };
-pub use viewer::{Viewer, ViewerAge, ViewerFeatures, ViewerProfile};
+pub use viewer::{
+    ClientCapability, VerifyBlurSupport, Viewer, ViewerAge, ViewerFeatures, ViewerProfile,
+};
 
 use crate::hydration::batch::TweetHydrationBatch;
 use crate::hydration::Hydrators;

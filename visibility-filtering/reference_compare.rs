@@ -1,5 +1,5 @@
 use crate::config::ENV_IMAGE;
-use crate::models::{Decided, MediaInterstitial, Verdict, Withholding};
+use crate::models::{Decided, Verdict, Withholding};
 use crate::rules::SafetyLevel;
 use crate::treatment;
 use std::collections::HashMap;
@@ -24,19 +24,6 @@ const LINE_BUDGET_BYTES: usize = 12 * 1024;
 
 const REFERENCE_TIMEOUT: Duration = Duration::from_millis(1500);
 
-pub(crate) fn should_build_harness(
-    flag_enabled: bool,
-    app_env: Option<&str>,
-) -> Result<bool, &'static str> {
-    match (flag_enabled, app_env) {
-        (false, _) => Ok(false),
-        (true, Some("prod")) => Err(
-            "VF_DUAL_CALL_HARNESS_ENABLED is set but APP_ENV=prod; the reference comparator is staging-only",
-        ),
-        (true, _) => Ok(true),
-    }
-}
-
 fn service_triple(
     verdict: &Verdict,
 ) -> (&'static str, Option<&FilteredReason>, Option<&'static str>) {
@@ -44,15 +31,11 @@ fn service_triple(
         Verdict::Withheld(Decided {
             value: Withholding::Drop(reason),
             ..
-        })
-        | Verdict::Shown {
-            media:
-                Some(Decided {
-                    value: MediaInterstitial { legacy: reason, .. },
-                    ..
-                }),
+        }) => Some(reason.legacy()),
+        Verdict::Shown {
+            media: Some(Decided { value, .. }),
             engagement: None | Some(_),
-        } => Some(reason),
+        } => Some(value.legacy()),
         Verdict::Withheld(Decided {
             value: Withholding::Tombstone(_),
             ..
@@ -337,7 +320,7 @@ pub(crate) fn comparable_request(
 
 const BUILD_SHA_LEN: usize = 12;
 
-fn resolve_build_sha(compiled: &str, image: Option<&str>) -> String {
+pub(crate) fn resolve_build_sha(compiled: &str, image: Option<&str>) -> String {
     if let Some(sha) = sha_prefix(compiled) {
         return sha.to_owned();
     }
@@ -477,6 +460,7 @@ impl ReferenceCompareHarness {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::models::{MediaInterstitial, MediaRestriction};
     use xai_visibility_filtering::models::{
         Action, DropReason, KeywordMatch, SafetyResult as ReferenceSafetyResult,
     };
@@ -516,8 +500,8 @@ pub(crate) mod tests {
 
     fn service_drop_of(reason: FilteredReason) -> Verdict {
         Verdict::Withheld(Decided {
-            value: Withholding::Drop(reason),
-            by: "DropSuspendedAuthorRule",
+            value: Withholding::Drop(crate::models::DropReason::Legacy(reason)),
+            by: "suspended_author/drop",
         })
     }
 
@@ -528,10 +512,11 @@ pub(crate) mod tests {
     fn service_interstitial() -> Verdict {
         Verdict::Shown {
             media: Some(Decided {
-                value: MediaInterstitial {
+                value: MediaRestriction::MediaInterstitial(MediaInterstitial {
                     legacy: FilteredReason::ContainNsfwMedia,
                     reason: InterstitialReason::Sensitive(true),
-                },
+                    prompt: None,
+                }),
                 by: "nsfw_media",
             }),
             engagement: None,
@@ -560,16 +545,6 @@ pub(crate) mod tests {
             &reference_muted_keyword()
         ));
         assert!(!is_exact_match(&service_drop(), &reference_muted_keyword()));
-    }
-
-    #[test]
-    fn should_build_harness_requires_flag_and_rejects_prod() {
-        assert_eq!(should_build_harness(false, Some("prod")), Ok(false));
-        assert_eq!(should_build_harness(false, Some("staging")), Ok(false));
-        assert_eq!(should_build_harness(false, None), Ok(false));
-        assert_eq!(should_build_harness(true, Some("staging")), Ok(true));
-        assert_eq!(should_build_harness(true, None), Ok(true));
-        assert!(should_build_harness(true, Some("prod")).is_err());
     }
 
     fn verdict(tweet_id: u64, verdict: Verdict) -> TweetVerdict {
@@ -728,7 +703,7 @@ pub(crate) mod tests {
             .map(|i| {
                 diff(
                     ID + i,
-                    &format!("interstitial:ContainNsfwMedia@NsfwAuthorInterstitialRule{i}"),
+                    &format!("interstitial:ContainNsfwMedia@nsfw_user/blur/sensitive_user{i}"),
                     "avoid:SafetyResult",
                 )
             })

@@ -1,16 +1,15 @@
-use crate::hydration::batch::{RawHydrationBatch, TweetHydrationBatch};
+use crate::hydration::batch::{Hydrated, RawHydrationBatch, TweetHydrationBatch};
 use crate::hydration::decode::author::DecodedAuthor;
-use crate::hydration::decode::tweet::build_tweet_features;
+use crate::hydration::decode::viewer::DecodedViewer;
 use crate::hydration::execute::Reply;
 use crate::hydration::plan::{Group, KeyOrigin};
-use crate::hydration::tes_composite::TweetForVisibility;
 use crate::hydration::{
     candidate_count_by_key, HydrationOutput, HydrationRequest, Hydrator, Hydrators,
 };
 use crate::models::{
     resolve_candidates, ConversationControlFeatures, HydratedTweetCandidate, PureCore,
-    RawCandidate, SafetyLabelMap, TweetCandidateInput, TweetId, Viewer, ViewerFeatures,
-    ViewerProfile,
+    RawCandidate, SafetyLabelMap, TweetCandidateInput, TweetFeatures, TweetId, Viewer,
+    ViewerFeatures,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -24,17 +23,17 @@ pub(super) struct Store {
     pub(super) tweet_ids: Vec<TweetId>,
     pure_cores: TweetHydrationBatch<PureCore>,
     pub(super) candidates: Vec<TweetCandidateInput>,
-    tweets: Option<TweetHydrationBatch<TweetForVisibility>>,
+    tweets: Option<TweetHydrationBatch<TweetFeatures>>,
     controls: Option<TweetHydrationBatch<ConversationControl>>,
     labels: Option<TweetHydrationBatch<Arc<vf_pb::SafetyLabelMap>>>,
-    viewer: Option<RawHydrationBatch<ViewerProfile>>,
+    viewer: Option<RawHydrationBatch<DecodedViewer>>,
     authors: Option<RawHydrationBatch<DecodedAuthor>>,
     edges: Vec<(Hydrators, RawHydrationBatch<Hydrators>)>,
     viewer_country: Option<RawHydrationBatch<Arc<str>>>,
     incomplete_keys: Vec<(Hydrators, HashSet<u64>)>,
     callable: Hydrators,
     pub(super) core_elapsed: Duration,
-    pub(super) composite_elapsed: Option<Duration>,
+    pub(super) tweets_elapsed: Option<Duration>,
 }
 
 impl Store {
@@ -204,7 +203,7 @@ impl Store {
                 self.pure_cores = pure_cores;
             }
             Reply::Tweets(tweets) => {
-                self.composite_elapsed = Some(elapsed);
+                self.tweets_elapsed = Some(elapsed);
                 self.tweets = Some(tweets.map_keys(TweetId));
             }
             Reply::Controls(controls) => self.controls = Some(controls.map_keys(TweetId)),
@@ -217,11 +216,28 @@ impl Store {
     }
 
     pub(super) fn assemble(self, request: HydrationRequest<'_>) -> HydrationOutput {
-        let candidates: Vec<HydratedTweetCandidate> = self
+        let mut candidates: Vec<HydratedTweetCandidate> = self
             .candidates
             .iter()
             .map(|input| self.candidate(input))
             .collect();
+        if let Some(tweets) = self.tweets {
+            let mut tweets = tweets.into_hydrated();
+            let last: HashMap<TweetId, usize> = candidates
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| (TweetId(candidate.tweet_id), index))
+                .collect();
+            for (index, candidate) in candidates.iter_mut().enumerate() {
+                let id = TweetId(candidate.tweet_id);
+                candidate.tweet_features = if last.get(&id) == Some(&index) {
+                    tweets.remove(&id).and_then(Hydrated::into_value)
+                } else {
+                    tweets.get(&id).and_then(Hydrated::value).cloned()
+                }
+                .unwrap_or_default();
+            }
+        }
         let failed_ids = candidates
             .iter()
             .filter(|candidate| !candidate.failed.is_empty())
@@ -229,16 +245,27 @@ impl Store {
             .collect();
         let viewer = match request.viewer_id {
             None => Viewer::LoggedOut,
-            Some(id) => Viewer::LoggedIn {
-                id,
-                profile: self
+            Some(id) => {
+                let DecodedViewer {
+                    profile,
+                    has_age_verified_18_label,
+                } = self
                     .viewer
                     .and_then(|viewer| viewer.into_hydrated().remove(&id)?.into_value())
-                    .unwrap_or_default(),
-            },
+                    .unwrap_or_default();
+                Viewer::LoggedIn {
+                    id,
+                    profile,
+                    has_age_verified_18_label,
+                }
+            }
         };
         HydrationOutput {
-            viewer_features: ViewerFeatures::from_request(viewer, request.country_code),
+            viewer_features: ViewerFeatures::from_request(
+                viewer,
+                request.country_code,
+                request.client_capability,
+            ),
             candidates,
             safety_labels: self
                 .labels
@@ -302,9 +329,6 @@ impl Store {
             failed: self.failed(input),
             ..Default::default()
         };
-        if let Some(tweets) = &self.tweets {
-            candidate.tweet_features = build_tweet_features(tweets.get(id));
-        }
         if let Some(labels) = self.labels.as_ref().and_then(|labels| labels.get(id)) {
             candidate.safety_labels = SafetyLabelMap::from_proto_label_types(labels);
         }

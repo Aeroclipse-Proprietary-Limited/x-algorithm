@@ -1,6 +1,7 @@
+use anyhow::anyhow;
 use std::collections::HashMap;
 use std::sync::Arc;
-use xai_core_entities::entities::GizmoduckUserResult;
+use xai_core_entities::entities::{GizmoduckUser, GizmoduckUserResult};
 use xai_core_entities::gizmoduck_client::{GizmoduckClient, LookupContext, QueryFields};
 
 pub struct GizmoduckLookup {
@@ -36,6 +37,21 @@ impl GizmoduckLookup {
             .into_iter()
             .map(|(id, result)| (id.cast_unsigned(), result))
             .collect()
+    }
+
+    pub async fn get_viewer(
+        &self,
+        viewer_id: u64,
+        fields: &[QueryFields],
+    ) -> anyhow::Result<Option<GizmoduckUser>> {
+        let result = self
+            .inner
+            .get_users_with_context(vec![viewer_id.cast_signed()], None, fields)
+            .await
+            .into_values()
+            .next()
+            .ok_or_else(|| anyhow!("Empty batch response from gizmoduck"))??;
+        Ok(result.and_then(|result| result.user))
     }
 }
 
@@ -121,5 +137,14 @@ mod tests {
         assert!(context.include_deactivated);
         assert!(context.include_erased);
         assert!(context.include_offboarded);
+    }
+
+    #[tokio::test]
+    async fn viewer_lookups_pass_no_context() {
+        let client = Arc::new(Recording::default());
+        let _ = GizmoduckLookup::new(client.clone())
+            .get_viewer(10, &[QueryFields::SAFETY])
+            .await;
+        assert!(matches!(client.0.lock().unwrap().as_slice(), [None]));
     }
 }

@@ -1,7 +1,10 @@
 use super::builders::tweet_candidate;
 use super::{Role, Row};
-use crate::models::{HydratedTweetCandidate, TweetFeatures};
-use crate::rules::fixtures::{allow, candidate, dropped};
+use crate::models::{
+    AuthorFeatures, ClientCapability, HydratedTweetCandidate, LimitedEngagementReason,
+    TweetFeatures, ViewerFeatures,
+};
+use crate::rules::fixtures::{allow, candidate, dropped, limited, viewer, VIEWER_ID};
 use crate::rules::SafetyLevel::{TimelineHome, TimelineHomeHydration};
 use xai_core_entities::entities::{EditControl, EditControlInitial};
 use xai_visibility_filtering::models::FilteredReason;
@@ -15,12 +18,12 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHome,
                     Role::NonFollower,
-                    dropped(FilteredReason::TweetIsNullcast, "NullcastedTweetDropRule"),
+                    dropped(FilteredReason::TweetIsNullcast, "nullcasted_tweet/drop"),
                 ),
                 (
                     TimelineHome,
                     Role::Author,
-                    dropped(FilteredReason::TweetIsNullcast, "NullcastedTweetDropRule"),
+                    dropped(FilteredReason::TweetIsNullcast, "nullcasted_tweet/drop"),
                 ),
             ],
         },
@@ -47,15 +50,76 @@ pub(super) fn rows() -> Vec<Row> {
             expect: vec![(TimelineHome, Role::NonFollower, allow())],
         },
         Row {
+            name: "protected_author_community_post",
+            post: candidate()
+                .with_author_features(AuthorFeatures {
+                    is_protected: true,
+                    ..Default::default()
+                })
+                .with_tweet_features(TweetFeatures {
+                    is_community_tweet: true,
+                    ..Default::default()
+                })
+                .build(),
+            expect: vec![
+                (
+                    TimelineHomeHydration,
+                    Role::Follower,
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "protected_community_tweet/drop/unspecified",
+                    ),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::NonFollower,
+                    dropped(FilteredReason::AuthorIsProtected, "protected_author/drop"),
+                ),
+                (TimelineHomeHydration, Role::Author, allow()),
+            ],
+        },
+        Row {
             name: "stale_edit",
             post: stale_candidate(),
             expect: vec![
                 (
                     TimelineHome,
                     Role::NonFollower,
-                    dropped(FilteredReason::UnspecifiedReason, "DropStaleTweetsRule"),
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "stale_tweet/drop/unspecified",
+                    ),
                 ),
-                (TimelineHomeHydration, Role::NonFollower, allow()),
+                (
+                    TimelineHomeHydration,
+                    Role::NonFollower,
+                    limited(
+                        LimitedEngagementReason::StaleTweet,
+                        "stale_tweet/limited_engagement",
+                    ),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::Author,
+                    limited(
+                        LimitedEngagementReason::StaleTweet,
+                        "stale_tweet/limited_engagement",
+                    ),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::As(
+                        "client_without_stale_tweet_limits",
+                        ViewerFeatures {
+                            client_capability: ClientCapability {
+                                stale_tweet_limits: false,
+                                ..ClientCapability::default()
+                            },
+                            ..viewer(VIEWER_ID)
+                        },
+                    ),
+                    allow(),
+                ),
             ],
         },
         Row {

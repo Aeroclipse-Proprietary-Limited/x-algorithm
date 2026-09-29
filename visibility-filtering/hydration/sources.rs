@@ -5,10 +5,10 @@ use crate::clients::wingman_client::WingmanClient;
 use crate::hydration::batch::{Hydrated, HydrationBatch, HydrationError, RawHydrationBatch};
 use crate::hydration::decode::author::{decode_authors, AuthorFallbackCache, DecodedAuthor};
 use crate::hydration::decode::tweet::{pure_core, PureCoreFallbackCache};
-use crate::hydration::decode::viewer::viewer_profile;
-use crate::hydration::tes_composite::{TweetForVisibility, TweetForVisibilitySource};
+use crate::hydration::decode::viewer::{decode_viewer, DecodedViewer};
+use crate::hydration::tweet_source::TweetSource;
 use crate::hydration::Hydrators;
-use crate::models::{PureCore, ViewerProfile};
+use crate::models::{PureCore, TweetFeatures};
 use crate::safety_label_source::SafetyLabelSource;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use xai_visibility_filtering_proto as vf_pb;
 pub(crate) trait Sources: Send + Sync {
     async fn pure_cores(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<PureCore>;
 
-    async fn tweets(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<TweetForVisibility>;
+    async fn tweets(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<TweetFeatures>;
 
     async fn conversation_controls(
         &self,
@@ -39,7 +39,7 @@ pub(crate) trait Sources: Send + Sync {
         &self,
         viewer_id: u64,
         fields: &[QueryFields],
-    ) -> RawHydrationBatch<ViewerProfile>;
+    ) -> RawHydrationBatch<DecodedViewer>;
 
     async fn users(
         &self,
@@ -118,9 +118,8 @@ fn landed_edges(
 
 pub(crate) struct ProdSources {
     tes: Arc<dyn TESClient + Send + Sync>,
-    composite: Arc<dyn TweetForVisibilitySource>,
-    gizmoduck: Arc<dyn GizmoduckClient + Send + Sync>,
-    authors: GizmoduckLookup,
+    tweets: TweetSource,
+    gizmoduck: GizmoduckLookup,
     socialgraph: Arc<dyn SocialgraphClient + Send + Sync>,
     about_this_account: Arc<dyn AboutThisAccountClient>,
     wingman: Arc<dyn WingmanClient>,
@@ -136,7 +135,7 @@ impl ProdSources {
     )]
     pub(crate) fn new(
         tes: Arc<dyn TESClient + Send + Sync>,
-        composite: Arc<dyn TweetForVisibilitySource>,
+        tweets: TweetSource,
         gizmoduck: Arc<dyn GizmoduckClient + Send + Sync>,
         socialgraph: Arc<dyn SocialgraphClient + Send + Sync>,
         about_this_account: Arc<dyn AboutThisAccountClient>,
@@ -147,9 +146,8 @@ impl ProdSources {
     ) -> Self {
         Self {
             tes,
-            composite,
-            authors: GizmoduckLookup::new(gizmoduck.clone()),
-            gizmoduck,
+            tweets,
+            gizmoduck: GizmoduckLookup::new(gizmoduck),
             socialgraph,
             about_this_account,
             wingman,
@@ -167,8 +165,8 @@ impl Sources for ProdSources {
         HydrationBatch::from_results(tweet_ids, cores).map(|core| pure_core(&core))
     }
 
-    async fn tweets(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<TweetForVisibility> {
-        let tweets = self.composite.get_tweets_for_visibility(&tweet_ids).await;
+    async fn tweets(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<TweetFeatures> {
+        let tweets = self.tweets.get_tweets(&tweet_ids).await;
         HydrationBatch::from_results(tweet_ids, tweets)
     }
 
@@ -198,14 +196,14 @@ impl Sources for ProdSources {
         &self,
         viewer_id: u64,
         fields: &[QueryFields],
-    ) -> RawHydrationBatch<ViewerProfile> {
-        let profile = self
+    ) -> RawHydrationBatch<DecodedViewer> {
+        let viewer = self
             .gizmoduck
-            .get_viewer_data_with_fields(viewer_id, fields)
+            .get_viewer(viewer_id, fields)
             .await
             .inspect_err(|error| warn!(%error, "Gizmoduck viewer lookup failed; failing open"))
-            .map(|data| Some(viewer_profile(data)));
-        HydrationBatch::from_results([viewer_id], HashMap::from([(viewer_id, profile)]))
+            .map(|user| Some(decode_viewer(user.as_ref(), fields)));
+        HydrationBatch::from_results([viewer_id], HashMap::from([(viewer_id, viewer)]))
     }
 
     async fn users(
@@ -213,7 +211,7 @@ impl Sources for ProdSources {
         user_ids: Vec<u64>,
         fields: &[QueryFields],
     ) -> RawHydrationBatch<DecodedAuthor> {
-        let users = self.authors.get_users(user_ids.clone(), fields).await;
+        let users = self.gizmoduck.get_users(user_ids.clone(), fields).await;
         decode_authors(HydrationBatch::from_results(user_ids, users))
     }
 
@@ -280,8 +278,7 @@ mod in_memory {
     use crate::clients::socialgraph_client::{EdgeDirection, Graph};
     use crate::hydration::plan::Source;
     use std::sync::Mutex;
-    use xai_core_entities::entities::{GizmoduckUserResult, PureCoreData};
-    use xai_core_entities::gizmoduck_client::ViewerData;
+    use xai_core_entities::entities::{GizmoduckUser, GizmoduckUserResult, PureCoreData};
 
     #[derive(Clone, Copy, Debug)]
     pub(crate) enum Fault {
@@ -292,10 +289,10 @@ mod in_memory {
     #[derive(Default)]
     pub(crate) struct InMemorySources {
         pure_cores: HashMap<u64, PureCoreData>,
-        tweets: HashMap<u64, TweetForVisibility>,
+        tweets: HashMap<u64, TweetFeatures>,
         controls: HashMap<u64, ConversationControl>,
         labels: HashMap<u64, Arc<vf_pb::SafetyLabelMap>>,
-        viewers: HashMap<u64, ViewerData>,
+        viewers: HashMap<u64, GizmoduckUser>,
         users: HashMap<u64, GizmoduckUserResult>,
         edges: HashSet<(Graph, u64, u64)>,
         countries: HashMap<u64, Arc<str>>,
@@ -327,7 +324,7 @@ mod in_memory {
             self
         }
 
-        pub(crate) fn composite(mut self, tweet_id: u64, tweet: TweetForVisibility) -> Self {
+        pub(crate) fn tweet_features(mut self, tweet_id: u64, tweet: TweetFeatures) -> Self {
             self.tweets.insert(tweet_id, tweet);
             self
         }
@@ -342,8 +339,8 @@ mod in_memory {
             self
         }
 
-        pub(crate) fn viewer(mut self, viewer_id: u64, data: ViewerData) -> Self {
-            self.viewers.insert(viewer_id, data);
+        pub(crate) fn viewer(mut self, viewer_id: u64, user: GizmoduckUser) -> Self {
+            self.viewers.insert(viewer_id, user);
             self
         }
 
@@ -486,9 +483,8 @@ mod in_memory {
                 .map(|core| pure_core(&core))
         }
 
-        async fn tweets(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<TweetForVisibility> {
-            self.keyed(Source::TesComposite, tweet_ids, &self.tweets)
-                .await
+        async fn tweets(&self, tweet_ids: Vec<u64>) -> RawHydrationBatch<TweetFeatures> {
+            self.keyed(Source::TesTweet, tweet_ids, &self.tweets).await
         }
 
         async fn conversation_controls(
@@ -511,11 +507,11 @@ mod in_memory {
             &self,
             viewer_id: u64,
             fields: &[QueryFields],
-        ) -> RawHydrationBatch<ViewerProfile> {
+        ) -> RawHydrationBatch<DecodedViewer> {
             self.record_fields(Source::GizmoduckViewer, fields);
             self.keyed(Source::GizmoduckViewer, vec![viewer_id], &self.viewers)
                 .await
-                .map(viewer_profile)
+                .map(|user| decode_viewer(Some(&user), fields))
         }
 
         async fn users(

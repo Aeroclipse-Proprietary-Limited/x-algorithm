@@ -19,6 +19,7 @@ from xrex.models.recsys_attention import RecsysAttentionConfig
 from xrex.models.recsys_embedding import HashKeys, HashTable
 from xrex.models.recsys_feature_prep import FeaturePrepConfig
 from xrex.models.recsys_model import (
+    MATCHED_WORD_FRACTION_NUM_BUCKETS,
     POST_AGE_MAX_MINUTES,
     CategoricalFeatureConfig,
     ContextFeaturesConfig,
@@ -696,6 +697,7 @@ for config in configs:
                 enabled=mparams.get("enable_context_features", True),
                 enable_engagement_counts=mparams.get("enable_engagement_counts", False),
                 enable_author_nsfw=mparams.get("enable_author_nsfw", False),
+                enable_search_lexical_match=mparams.get("enable_search_lexical_match", False),
                 categorical_features=[
                     CategoricalFeatureConfig(
                         feature_name="product_surface",
@@ -767,6 +769,18 @@ for config in configs:
                         index=CategoricalFeature.viewCountBucketSeq,
                         feature_name="view_count_bucket",
                         cardinality=32,
+                        embedding_dim=16,
+                    ),
+                    CategoricalFeatureConfig(
+                        index=CategoricalFeature.exactPhraseSeq,
+                        feature_name="exact_phrase",
+                        cardinality=3,
+                        embedding_dim=16,
+                    ),
+                    CategoricalFeatureConfig(
+                        index=CategoricalFeature.matchedWordFractionBucketSeq,
+                        feature_name="matched_word_fraction_bucket",
+                        cardinality=MATCHED_WORD_FRACTION_NUM_BUCKETS,
                         embedding_dim=16,
                     ),
                 ],

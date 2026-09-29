@@ -69,7 +69,6 @@ pub(crate) fn scoring_inputs(
             weights.min_video_duration_ms,
             weights.enable_quoted_vqv_duration_check,
         ),
-        author_policy_zeroed: candidate.author_policy_zeroed,
         cold_start_lift_to_rank: candidate.cold_start_lift_to_rank,
         weighted_score: None,
     }

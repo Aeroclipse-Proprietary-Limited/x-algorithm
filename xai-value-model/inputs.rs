@@ -10,7 +10,6 @@ pub struct CandidateScoringInputs {
     pub is_mutual_follow_author: bool,
     pub vqv_eligible: bool,
     pub quoted_vqv_eligible: bool,
-    pub author_policy_zeroed: bool,
     pub cold_start_lift_to_rank: Option<u32>,
     pub weighted_score: Option<f64>,
 }

@@ -17,7 +17,10 @@ pub(super) fn rows() -> Vec<Row> {
             expect: vec![(
                 TimelineHome,
                 Role::NonFollower,
-                dropped(FilteredReason::ViewerBlocksAuthor, "ViewerBlocksAuthorRule"),
+                dropped(
+                    FilteredReason::ViewerBlocksAuthor,
+                    "viewer_blocks_author/drop",
+                ),
             )],
         },
         Row {
@@ -26,7 +29,10 @@ pub(super) fn rows() -> Vec<Row> {
             expect: vec![(
                 TimelineHome,
                 Role::NonFollower,
-                dropped(FilteredReason::ViewerMutesAuthor, "ViewerMutesAuthorRule"),
+                dropped(
+                    FilteredReason::ViewerMutesAuthor,
+                    "viewer_mutes_author/drop",
+                ),
             )],
         },
         Row {
@@ -35,7 +41,10 @@ pub(super) fn rows() -> Vec<Row> {
             expect: vec![(
                 TimelineHome,
                 Role::NonFollower,
-                dropped(FilteredReason::ViewerBlocksAuthor, "ViewerBlocksAuthorRule"),
+                dropped(
+                    FilteredReason::ViewerBlocksAuthor,
+                    "viewer_blocks_author/drop",
+                ),
             )],
         },
         Row {
@@ -44,7 +53,10 @@ pub(super) fn rows() -> Vec<Row> {
             expect: vec![(
                 TimelineHome,
                 Role::NonFollower,
-                dropped(FilteredReason::UnspecifiedReason, "MutedRetweetsRule"),
+                dropped(
+                    FilteredReason::UnspecifiedReason,
+                    "viewer_mutes_retweets/drop/unspecified",
+                ),
             )],
         },
         Row {
@@ -63,7 +75,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::NonFollower,
                 limited(
                     LimitedEngagementReason::BlockedViewer,
-                    "BlockedViewerLimitedActionsRule",
+                    "blocked_viewer/limited_engagement",
                 ),
             )],
         },
@@ -80,7 +92,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::Author,
                 limited(
                     LimitedEngagementReason::RootAuthorBlockedViewer,
-                    "RootAuthorBlocksViewerLimitedActionsRule",
+                    "blocked_viewer/limited_engagement/root_author_blocked_viewer",
                 ),
             )],
         },
@@ -95,7 +107,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::NonFollower,
                 limited(
                     LimitedEngagementReason::RootAuthorBlockedViewer,
-                    "RootAuthorBlocksViewerLimitedActionsRule",
+                    "blocked_viewer/limited_engagement/root_author_blocked_viewer",
                 ),
             )],
         },

@@ -1,29 +1,279 @@
 use crate::hydration::{Hydrator, Hydrators};
 use crate::models::region::allows_country;
 use crate::models::{
-    AuthorLabel, LimitedEngagementReason, SafetyLabelType, TombstoneReason, ViewerProfile,
+    AuthorLabel, DropReason, LimitedEngagementReason, MediaInterstitial, MediaRestriction,
+    NsfwViewerDropReason, SafetyLabelType, TombstoneReason, VerifyBlurSupport, ViewerProfile,
 };
+use crate::params::CountryList;
 use crate::rules::context::CoreFacts;
 use crate::rules::RuleContext;
 use std::ops::Not;
 use xai_core_entities::entities::ConversationControlArm;
 use xai_visibility_filtering::models::FilteredReason;
-use xai_x_thrift::action::InterstitialReason;
+use xai_x_thrift::action::{InterstitialAction, InterstitialReason};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub(super) enum RuleId {
+    FilterAll,
+
+    SuspendedAuthor,
+    DeactivatedAuthor,
+    ErasedAuthor,
+    OffboardedAuthor,
+    ProtectedAuthor,
+    ViewerBlocksAuthor,
+    ViewerMutesAuthor,
+    ViewerMutesRetweets,
+
+    Pdna,
+    Bounce,
+    Spam,
+    ForEmergencyUseOnly,
+    FosnrHatefulConduct,
+    FosnrViolentSpeech,
+    FosnrAbuse,
+    FosnrCivicIntegrity,
+    FosnrAbuseInsults,
+    FosnrAbuseInsultsNonFollower,
+    FosnrFallback,
+    NullcastedTweet,
+    StaleTweet,
+    LegalTakedown,
+    LocalLawsTakedown,
+    ProtectedCommunityTweet,
+
+    SensitiveViewerLoggedOut,
+    SensitiveViewerUnderage,
+    SensitiveViewerNoStatedAge,
+    NsfwSensitiveViewerTweet,
+    NsfwSensitiveViewerUser,
+
+    ExclusiveTweet,
+    AuthorBlocksViewerExclusiveContent,
+    CreatorTweetNsfw,
+
+    NsfwHighPrecision,
+    GoreAndViolenceHighPrecision,
+    GoreAndViolenceIgnoringSettings,
+    NsfwCardImage,
+    NsfwAdmin,
+    NsfwUser,
+    NsfwAccount,
+    NsfwReportedHeuristics,
+    GoreAndViolenceReportedHeuristics,
+
+    DmcaMedia,
+    GeoRestrictedMedia,
+    NsfwUserAuthor,
+    NsfwAdminAuthor,
+    NsfwUserTweetFlag,
+    NsfwAdminTweetFlag,
+    NsfwHighRecall,
+    DoNotAmplify,
+    MaliciousUrl,
+    SpamHighRecall,
+
+    NsfwHighRecallUserLabel,
+    NsfwHighPrecisionUserLabel,
+    NsfwAvatarImageUserLabel,
+    NsfwBannerImageUserLabel,
+    NsfwNearPerfectUserLabel,
+    SpamHighRecallUserLabel,
+    CompromisedUserLabel,
+    ReadOnlyUserLabel,
+    ImpersonationHighPrecisionUserLabel,
+    AbusiveHighRecallUserLabel,
+    DoNotAmplifyUserLabel,
+
+    BlockedViewer,
+    LimitRepliesByInvitation,
+    LimitRepliesCommunity,
+    LimitRepliesSubscribers,
+    LimitRepliesVerified,
+    LimitRepliesMyNetwork,
+    LimitRepliesCo,
+    ReadOnlyViewer,
+}
+
+#[derive(Clone, PartialEq)]
 pub(super) struct RuleClause {
-    pub(super) rule_name: &'static str,
-    pub(super) when: &'static [Condition],
+    pub(super) id: RuleId,
+    pub(super) when: Vec<Condition>,
     pub(super) applies_to: Audience,
     pub(super) action: ActionSpec,
 }
 
+impl RuleClause {
+    pub(super) fn name(&self) -> String {
+        let id: &str = self.id.into();
+        let (kind, reason, prompt) = match &self.action {
+            ActionSpec::Drop(DropReason::Legacy(reason)) => {
+                let reason = match reason {
+                    FilteredReason::UnspecifiedReason => "unspecified".to_owned(),
+                    FilteredReason::PossiblyUndesirable => "undesirable".to_owned(),
+                    FilteredReason::ContainNsfwMedia => "nsfw_media".to_owned(),
+                    FilteredReason::AuthorAccountIsInactive => "inactive".to_owned(),
+                    reason => snake(reason),
+                };
+                ("drop", Some(reason), None)
+            }
+            ActionSpec::Drop(DropReason::NsfwViewer(reason)) => {
+                ("drop", Some(<&str>::from(reason).to_owned()), None)
+            }
+            ActionSpec::Tombstone(TombstoneReason::SensitiveViewerAgeVerification) => {
+                ("tombstone", Some("age_verification".to_owned()), None)
+            }
+            ActionSpec::Tombstone(reason) => {
+                ("tombstone", Some(<&str>::from(reason).to_owned()), None)
+            }
+            ActionSpec::MediaRestriction(MediaRestriction::MediaInterstitial(blur)) => {
+                let reason = match &blur.reason {
+                    InterstitialReason::PossiblyUndesirable(_) => "undesirable".to_owned(),
+                    reason => snake(reason),
+                };
+                let prompt = blur.prompt.map(|prompt| match prompt {
+                    InterstitialAction::AGE_VERIFICATION_PROMPT => "age_prompt".to_owned(),
+                    prompt => prompt.0.to_string(),
+                });
+                ("blur", Some(reason), prompt)
+            }
+            ActionSpec::MediaRestriction(MediaRestriction::NsfwInterstitial) => {
+                ("legacy_interstitial", None, None)
+            }
+            ActionSpec::LimitedEngagement(reason) => (
+                "limited_engagement",
+                Some(<&str>::from(reason).to_owned()),
+                None,
+            ),
+        };
+        let squashed = |name: &str| name.replace('_', "");
+        let reason = reason
+            .map(|reason| {
+                ["author_is_", "tweet_is_", "is_", "has_"]
+                    .iter()
+                    .find_map(|prefix| reason.strip_prefix(prefix))
+                    .unwrap_or(&reason)
+                    .to_owned()
+            })
+            .filter(|reason| !squashed(id).contains(&squashed(reason)));
+        let mut name = format!("{id}/{kind}");
+        for part in [reason, prompt].into_iter().flatten() {
+            name.push('/');
+            name.push_str(&part);
+        }
+        name
+    }
+}
+
+fn snake(value: &impl std::fmt::Debug) -> String {
+    let debug = format!("{value:?}");
+    let variant = debug.split('(').next().unwrap_or_default();
+    let mut snake = String::new();
+    for (index, char) in variant.chars().enumerate() {
+        if char.is_uppercase() && index > 0 {
+            snake.push('_');
+        }
+        snake.push(char.to_ascii_lowercase());
+    }
+    snake
+}
+
+pub(super) struct Clause {
+    when: Vec<Condition>,
+    applies_to: Audience,
+    action: ActionSpec,
+}
+
+pub(super) fn except_author(
+    when: impl IntoIterator<Item = Condition>,
+    action: ActionSpec,
+) -> Clause {
+    Clause {
+        when: when.into_iter().collect(),
+        applies_to: Audience::ExceptAuthor,
+        action,
+    }
+}
+
+pub(super) fn everyone(when: impl IntoIterator<Item = Condition>, action: ActionSpec) -> Clause {
+    Clause {
+        when: when.into_iter().collect(),
+        applies_to: Audience::Everyone,
+        action,
+    }
+}
+
+pub(super) fn only_when(
+    condition: Condition,
+    clauses: impl IntoIterator<Item = Clause>,
+) -> impl Iterator<Item = Clause> {
+    clauses.into_iter().map(move |mut clause| {
+        clause.when.insert(0, condition);
+        clause
+    })
+}
+
+pub(super) struct Family {
+    id: RuleId,
+    when: Vec<Condition>,
+    clauses: Vec<Clause>,
+}
+
+pub(super) fn family(id: RuleId) -> Family {
+    Family {
+        id,
+        when: Vec::new(),
+        clauses: Vec::new(),
+    }
+}
+
+pub(super) fn rule(id: RuleId, clause: Clause) -> Vec<RuleClause> {
+    family(id).clause(clause).into()
+}
+
+impl Family {
+    pub(super) fn when(mut self, when: impl IntoIterator<Item = Condition>) -> Self {
+        self.when.extend(when);
+        self
+    }
+
+    pub(super) fn clause(mut self, clause: Clause) -> Self {
+        self.clauses.push(clause);
+        self
+    }
+
+    pub(super) fn clauses(mut self, clauses: impl IntoIterator<Item = Clause>) -> Self {
+        self.clauses.extend(clauses);
+        self
+    }
+}
+
+impl From<Family> for Vec<RuleClause> {
+    fn from(family: Family) -> Self {
+        family
+            .clauses
+            .into_iter()
+            .map(|clause| RuleClause {
+                id: family.id,
+                when: family.when.iter().copied().chain(clause.when).collect(),
+                applies_to: clause.applies_to,
+                action: clause.action,
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub(super) enum Condition {
     Holds(Predicate),
     Not(Predicate),
     AnyOf(&'static [Predicate]),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub(super) enum Predicate {
     Tweet(TweetPredicate),
     Author(AuthorPredicate),
@@ -31,7 +281,8 @@ pub(super) enum Predicate {
     Relationship(RelationshipPredicate),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub(super) enum TweetPredicate {
     HasSafetyLabel(SafetyLabelType),
     CreatedAfter(u64),
@@ -50,7 +301,8 @@ pub(super) enum TweetPredicate {
     HasConversationControl(ConversationControlArm),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub(super) enum AuthorPredicate {
     HasUserLabel(AuthorLabel),
     IsSuspended,
@@ -62,18 +314,28 @@ pub(super) enum AuthorPredicate {
     IsNsfwAdmin,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub(super) enum ViewerPredicate {
     LoggedOut,
     Underage,
     NoStatedAge,
     AllowsSensitiveMedia,
-    InNsfwGatingCountry,
+    RequestCountryIn(CountryList),
+    AccountOrRequestCountryIn(CountryList),
+    AgeVerified,
+    ClientVerifyBlurSupportIs(VerifyBlurSupport),
+    ClientHasModernBlur,
+    ClientHasStaleTweetLimits,
+    ClientBlursGoreIgnoringSettings,
+    ClientHasFosnrRules,
+    ClientNeedsFosnrFallbackDrops,
     HasVerifiedBadge,
     ReadOnly,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 #[expect(
     clippy::enum_variant_names,
     reason = "the Viewer prefix identifies the acting subject of each relationship"
@@ -95,24 +357,68 @@ pub(super) enum RelationshipPredicate {
     ViewerIsInAllowedCountry,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
 pub(super) enum Audience {
     Everyone,
     ExceptAuthor,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum ActionSpec {
-    Drop(FilteredReason),
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "constructed once a policy has a Tombstone clause")
-    )]
+    Drop(DropReason),
     Tombstone(TombstoneReason),
-    Interstitial {
-        legacy: FilteredReason,
-        media: InterstitialReason,
-    },
+    MediaRestriction(MediaRestriction),
     LimitedEngagement(LimitedEngagementReason),
+}
+
+pub(super) fn drop_post(reason: FilteredReason) -> ActionSpec {
+    ActionSpec::Drop(DropReason::Legacy(reason))
+}
+
+pub(super) fn nsfw_viewer_drop(reason: NsfwViewerDropReason) -> ActionSpec {
+    ActionSpec::Drop(DropReason::NsfwViewer(reason))
+}
+
+pub(super) fn tombstone(reason: TombstoneReason) -> ActionSpec {
+    ActionSpec::Tombstone(reason)
+}
+
+pub(super) fn limit(reason: LimitedEngagementReason) -> ActionSpec {
+    ActionSpec::LimitedEngagement(reason)
+}
+
+pub(super) fn blur(reason: InterstitialReason) -> ActionSpec {
+    media_interstitial(reason, None)
+}
+
+pub(super) fn blur_with_age_prompt(reason: InterstitialReason) -> ActionSpec {
+    media_interstitial(reason, Some(InterstitialAction::AGE_VERIFICATION_PROMPT))
+}
+
+fn media_interstitial(
+    reason: InterstitialReason,
+    prompt: Option<InterstitialAction>,
+) -> ActionSpec {
+    ActionSpec::MediaRestriction(MediaRestriction::MediaInterstitial(MediaInterstitial {
+        legacy: FilteredReason::ContainNsfwMedia,
+        reason,
+        prompt,
+    }))
+}
+
+pub(super) const LEGACY_NSFW_INTERSTITIAL: ActionSpec =
+    ActionSpec::MediaRestriction(MediaRestriction::NsfwInterstitial);
+
+impl ActionSpec {
+    pub(super) const fn severity(&self) -> u8 {
+        match self {
+            Self::Drop(_) => 17,
+            Self::Tombstone(_) => 16,
+            Self::MediaRestriction(_) => 10,
+            Self::LimitedEngagement(_) => 6,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,7 +499,7 @@ impl RuleClause {
             return Truth::False;
         }
         let mut truth = Truth::True;
-        for condition in self.when {
+        for condition in &self.when {
             truth = truth.and(condition.truth(context));
             if truth == Truth::False {
                 break;
@@ -202,14 +508,12 @@ impl RuleClause {
         truth
     }
 
-    pub(super) const fn hydrators(&self) -> Hydrators {
-        let mut hydrators = Hydrators::empty();
-        let mut rest = self.when;
-        while let [condition, tail @ ..] = rest {
-            hydrators = hydrators.union(condition.hydrators());
-            rest = tail;
-        }
-        hydrators
+    pub(super) fn hydrators(&self) -> Hydrators {
+        self.when
+            .iter()
+            .fold(Hydrators::empty(), |hydrators, condition| {
+                hydrators.union(condition.hydrators())
+            })
     }
 }
 
@@ -334,6 +638,7 @@ macro_rules! predicates {
     (@read $context:ident ConversationControl) => { $context.conversation_control() };
     (@read $context:ident TweetSafetyLabels) => { $context.tweet_safety_labels() };
     (@read $context:ident ViewerProfile) => { $context.viewer_profile() };
+    (@read $context:ident ViewerLabels) => { $context.viewer_has_age_verified_18_label() };
     (@read $context:ident AuthorSafety) => { $context.author_features() };
     (@read $context:ident AuthorLabels) => { $context.author_labels() };
     (@read $context:ident ViewerCountry) => { $context.viewer_country() };
@@ -385,12 +690,30 @@ predicates! {
             => |_, profile| profile.is_some_and(ViewerProfile::has_no_stated_age),
         AllowsSensitiveMedia reads ViewerProfile
             => |_, profile| profile.is_some_and(|profile| profile.allows_sensitive_media),
-        InNsfwGatingCountry reads ViewerProfile => |facts, profile| {
+        RequestCountryIn(list) reads () => |facts, ()| {
+            facts
+                .request_country()
+                .is_some_and(|country| facts.in_country_list(list, country))
+        },
+        AccountOrRequestCountryIn(list) reads ViewerProfile => |facts, profile| {
             profile
                 .and_then(|profile| profile.account_country_code.as_deref())
                 .or(facts.request_country())
-                .is_some_and(|country| facts.nsfw_gating_country(country))
+                .is_some_and(|country| facts.in_country_list(list, country))
         },
+        AgeVerified reads (ViewerProfile, ViewerLabels) => |_, (profile, age_verified_18)| {
+            age_verified_18 || profile.is_some_and(|profile| profile.has_idv_premium)
+        },
+        ClientVerifyBlurSupportIs(support) reads ()
+            => |facts, ()| facts.client_capability().verify_blur_support == Some(support),
+        ClientHasModernBlur reads () => |facts, ()| facts.client_capability().modern_blur,
+        ClientHasStaleTweetLimits reads ()
+            => |facts, ()| facts.client_capability().stale_tweet_limits,
+        ClientBlursGoreIgnoringSettings reads ()
+            => |facts, ()| facts.client_capability().gore_blur_ignores_settings,
+        ClientHasFosnrRules reads () => |facts, ()| facts.client_capability().fosnr_rules,
+        ClientNeedsFosnrFallbackDrops reads ()
+            => |facts, ()| facts.client_capability().fosnr_fallback_drops,
         HasVerifiedBadge reads ViewerProfile
             => |_, profile| profile.is_some_and(|profile| profile.has_verified_badge),
         ReadOnly reads ViewerProfile
@@ -441,8 +764,13 @@ predicates! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ConversationControlFeatures, HydratedTweetCandidate, ViewerFeatures};
-    use crate::rules::fixtures::{candidate, logged_out_viewer, viewer, VIEWER_ID};
+    use crate::models::{
+        ClientCapability, ConversationControlFeatures, HydratedTweetCandidate, Viewer,
+        ViewerFeatures,
+    };
+    use crate::rules::fixtures::{
+        candidate, logged_out_viewer, viewer, viewer_with_profile, VIEWER_ID,
+    };
     use crate::rules::{holds_narrowed, test_context};
     use xai_core_entities::entities::ConversationControl;
 
@@ -573,5 +901,109 @@ mod tests {
                 "{tweet_id}"
             );
         }
+    }
+
+    #[test]
+    fn age_verified_is_the_label_or_idv_premium_and_the_request_country_is_never_unknown() {
+        use ViewerPredicate::{AgeVerified, RequestCountryIn};
+        let in_country = |country: Option<&str>, profile: ViewerProfile| ViewerFeatures {
+            country_code: country.map(str::to_string),
+            ..viewer_with_profile(profile)
+        };
+        let labeled = ViewerFeatures {
+            viewer: Viewer::LoggedIn {
+                id: VIEWER_ID,
+                profile: ViewerProfile::default(),
+                has_age_verified_18_label: true,
+            },
+            ..ViewerFeatures::default()
+        };
+        let idv_premium = ViewerProfile {
+            has_idv_premium: true,
+            ..ViewerProfile::default()
+        };
+        let account_in_fr = ViewerProfile {
+            account_country_code: Some("fr".into()),
+            ..ViewerProfile::default()
+        };
+        let request_country_in = RequestCountryIn(CountryList::AgeVerification);
+        let candidate = candidate().build();
+        for (predicate, viewer, expected) in [
+            (AgeVerified, labeled, true),
+            (AgeVerified, in_country(None, idv_premium), true),
+            (
+                AgeVerified,
+                in_country(None, ViewerProfile::default()),
+                false,
+            ),
+            (AgeVerified, logged_out_viewer(), false),
+            (
+                request_country_in,
+                in_country(Some("fr"), ViewerProfile::default()),
+                true,
+            ),
+            (
+                request_country_in,
+                in_country(Some("us"), account_in_fr),
+                false,
+            ),
+            (
+                request_country_in,
+                in_country(None, ViewerProfile::default()),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                holds_narrowed(Predicate::Viewer(predicate), &viewer, &candidate),
+                expected
+            );
+        }
+
+        let failed = HydratedTweetCandidate {
+            failed: Hydrators::all(),
+            ..candidate
+        };
+        let viewer = in_country(Some("fr"), ViewerProfile::default());
+        let context = test_context(&viewer, &failed);
+        assert_eq!(
+            Predicate::Viewer(AgeVerified).truth(&context),
+            Truth::Unknown {
+                default: false,
+                failed: Hydrators::of(Hydrator::ViewerProfile).with(Hydrator::ViewerLabels),
+            }
+        );
+        assert_eq!(
+            Predicate::Viewer(request_country_in).truth(&context),
+            Truth::True
+        );
+    }
+
+    #[test]
+    fn the_client_checks_read_the_resolved_capability_and_are_never_unknown() {
+        use VerifyBlurSupport::{IosNeedsUpdate, Supported};
+        let viewer = ViewerFeatures {
+            client_capability: ClientCapability {
+                verify_blur_support: Some(IosNeedsUpdate),
+                modern_blur: true,
+                stale_tweet_limits: true,
+                gore_blur_ignores_settings: true,
+                fosnr_rules: true,
+                fosnr_fallback_drops: true,
+            },
+            ..viewer(VIEWER_ID)
+        };
+        let failed = HydratedTweetCandidate {
+            failed: Hydrators::all(),
+            ..candidate().build()
+        };
+        let context = test_context(&viewer, &failed);
+        for (support, expected) in [(IosNeedsUpdate, Truth::True), (Supported, Truth::False)] {
+            let check = Predicate::Viewer(ViewerPredicate::ClientVerifyBlurSupportIs(support));
+            assert_eq!(check.truth(&context), expected, "{support:?}");
+        }
+        assert_eq!(
+            Predicate::Viewer(ViewerPredicate::ClientHasModernBlur).truth(&context),
+            Truth::True
+        );
     }
 }

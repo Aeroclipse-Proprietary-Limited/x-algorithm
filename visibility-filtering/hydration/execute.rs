@@ -1,6 +1,7 @@
 use crate::clients::socialgraph_client::EdgeQuery;
 use crate::hydration::batch::{Hydrated, HydrationBatch, RawHydrationBatch};
 use crate::hydration::decode::author::DecodedAuthor;
+use crate::hydration::decode::viewer::DecodedViewer;
 use crate::hydration::fallback_cache::FallbackCache;
 use crate::hydration::metrics::{
     self, record_batch_size, record_flock_missing_keys, record_viewer_country,
@@ -9,11 +10,10 @@ use crate::hydration::metrics::{
 use crate::hydration::plan::{Group, Source};
 use crate::hydration::sources::Sources;
 use crate::hydration::store::Store;
-use crate::hydration::tes_composite::TweetForVisibility;
 use crate::hydration::{
     HydrationOutput, HydrationPlan, HydrationRequest, Hydrator, Hydrators, HYDRATION_TIMEOUT,
 };
-use crate::models::{PureCore, ViewerProfile};
+use crate::models::{PureCore, TweetFeatures};
 use crate::rules::SafetyLevel;
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::{HashMap, HashSet};
@@ -35,10 +35,10 @@ enum ViewerCountry {
 
 pub(super) enum Reply {
     PureCores(RawHydrationBatch<PureCore>),
-    Tweets(RawHydrationBatch<TweetForVisibility>),
+    Tweets(RawHydrationBatch<TweetFeatures>),
     Controls(RawHydrationBatch<ConversationControl>),
     Labels(RawHydrationBatch<Arc<vf_pb::SafetyLabelMap>>),
-    Viewer(RawHydrationBatch<ViewerProfile>),
+    Viewer(RawHydrationBatch<DecodedViewer>),
     Authors(RawHydrationBatch<DecodedAuthor>),
     Edges(RawHydrationBatch<Hydrators>),
     ViewerCountry(RawHydrationBatch<Arc<str>>),
@@ -115,10 +115,8 @@ impl HydrationPlan {
         metrics::record_tes_join_latency(
             self.level(),
             store
-                .composite_elapsed
-                .map_or(store.core_elapsed, |composite| {
-                    composite.max(store.core_elapsed)
-                }),
+                .tweets_elapsed
+                .map_or(store.core_elapsed, |tweets| tweets.max(store.core_elapsed)),
         );
         store.assemble(request)
     }
@@ -185,7 +183,7 @@ impl HydrationPlan {
                     Reply::PureCores(fall_back(cache, timed.run(sources.pure_cores(keys)).await))
                 })
             }
-            Source::TesComposite => {
+            Source::TesTweet => {
                 Box::pin(async move { Reply::Tweets(timed.run(sources.tweets(keys)).await) })
             }
             Source::TesConversationControl => Box::pin(async move {
@@ -260,7 +258,7 @@ fn batch_size(group: &Group, store: &Store, keys: usize) -> Option<usize> {
         Source::SafetyLabels | Source::Wingman => Some(store.tweet_ids.len()),
         Source::Flock if group.input == Some(Hydrator::PureCore) => Some(store.candidates.len()),
         Source::Flock => Some(store.tweet_ids.len()),
-        Source::TesComposite | Source::GizmoduckViewer | Source::ViewerCountry => None,
+        Source::TesTweet | Source::GizmoduckViewer | Source::ViewerCountry => None,
     }
 }
 
@@ -322,12 +320,13 @@ mod tests {
     use crate::hydration::decode::author::fallback_cache;
     use crate::hydration::decode::tweet::pure_core_fallback_cache;
     use crate::hydration::sources::{Fault, InMemorySources};
-    use crate::models::{RawCandidate, TweetId, Viewer};
+    use crate::models::{ClientCapability, RawCandidate, TweetId, Viewer, ViewerProfile};
     use crate::rules::{RuleEngine, SafetyLevel};
     use xai_core_entities::entities::{
-        GizmoduckUser, GizmoduckUserResult, PureCoreData, Safety, UserResponseState,
+        ExtendedProfile, GizmoduckUser, GizmoduckUserResult, PureCoreData, Safety,
+        UserResponseState,
     };
-    use xai_core_entities::gizmoduck_client::{QueryFields, ViewerData};
+    use xai_core_entities::gizmoduck_client::QueryFields;
 
     const VIEWER: u64 = 50;
 
@@ -348,7 +347,12 @@ mod tests {
             .plan(level)
             .hydrate(
                 sources,
-                HydrationRequest::new(viewer_id, Some("US".into()), raw),
+                HydrationRequest::new(
+                    viewer_id,
+                    Some("US".into()),
+                    ClientCapability::default(),
+                    raw,
+                ),
             )
             .await
     }
@@ -370,19 +374,10 @@ mod tests {
         }
     }
 
-    fn exclusive_tweet() -> TweetForVisibility {
-        TweetForVisibility {
-            author_id: 900,
-            source_tweet_id: None,
-            is_nullcast: false,
-            nsfw_user: false,
-            nsfw_admin: false,
-            has_takedown: false,
-            takedown_reasons: vec![],
-            media: Default::default(),
-            is_community_tweet: false,
-            edit_control: None,
+    fn exclusive_tweet() -> TweetFeatures {
+        TweetFeatures {
             exclusive_conversation_author_id: Some(30),
+            ..Default::default()
         }
     }
 
@@ -398,12 +393,17 @@ mod tests {
 
     #[tokio::test]
     async fn failed_ids_reports_exactly_the_candidates_each_node_flags() {
-        use ConversationControlArm::{Co, Community};
+        use ConversationControlArm::{Co, Subscribers};
         use SafetyLevel::{TimelineHome, TimelineHomeHydration};
         let world = || InMemorySources::default().tweet(1, 10).tweet(2, 20);
         let rows = [
             ("healthy home", TimelineHome, world(), vec![]),
-            ("healthy level 82", TimelineHomeHydration, world(), vec![]),
+            (
+                "healthy home hydration",
+                TimelineHomeHydration,
+                world(),
+                vec![],
+            ),
             (
                 "failed pure core",
                 TimelineHome,
@@ -435,9 +435,9 @@ mod tests {
                 vec![1, 2],
             ),
             (
-                "failed composite row",
+                "failed tweet row",
                 TimelineHome,
-                world().fail_key(Source::TesComposite, 1),
+                world().fail_key(Source::TesTweet, 1),
                 vec![1],
             ),
             (
@@ -450,7 +450,7 @@ mod tests {
                 "failed exclusive select",
                 TimelineHome,
                 world()
-                    .composite(1, exclusive_tweet())
+                    .tweet_features(1, exclusive_tweet())
                     .fail_graph(Graph::SuperFollows),
                 vec![1],
             ),
@@ -458,8 +458,8 @@ mod tests {
                 "failed root-edge select",
                 TimelineHomeHydration,
                 world()
-                    .control(1, control(Community, 30, &[]))
-                    .fail_graph(Graph::Follows),
+                    .control(1, control(Subscribers, 30, &[]))
+                    .fail_graph(Graph::SuperFollows),
                 vec![1],
             ),
             (
@@ -495,19 +495,19 @@ mod tests {
     async fn each_candidate_carries_the_nodes_that_failed_for_it() {
         use ConversationControlArm::MyNetwork;
         use Hydrator::{
-            BlockedByReplyRoot, PureCore, RootFollowsViewer, RootFollowsViewerSecondDegree,
-            SuperFollowsExclusive, Tweet,
+            BlockedByAuthor, BlockedByReplyRoot, Follows, PureCore, RootFollowsViewer,
+            RootFollowsViewerSecondDegree, SuperFollowsExclusive, Tweet,
         };
         use SafetyLevel::{TimelineHome, TimelineHomeHydration};
         let world = || InMemorySources::default().tweet(1, 10).tweet(2, 20);
         let rows = [
             (
-                "failed composite row",
+                "failed tweet row",
                 TimelineHome,
                 Some(VIEWER),
                 world()
-                    .composite(2, exclusive_tweet())
-                    .fail_key(Source::TesComposite, 1),
+                    .tweet_features(2, exclusive_tweet())
+                    .fail_key(Source::TesTweet, 1),
                 [
                     Hydrators::of(Tweet).with(SuperFollowsExclusive),
                     Hydrators::empty(),
@@ -521,8 +521,11 @@ mod tests {
                     .control(1, control(MyNetwork, 30, &[]))
                     .fail_graph(Graph::Follows),
                 [
-                    Hydrators::of(RootFollowsViewer).with(RootFollowsViewerSecondDegree),
-                    Hydrators::empty(),
+                    Hydrators::of(RootFollowsViewer)
+                        .with(RootFollowsViewerSecondDegree)
+                        .with(Follows)
+                        .with(BlockedByAuthor),
+                    Hydrators::of(Follows).with(BlockedByAuthor),
                 ],
             ),
             (
@@ -599,12 +602,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn author_calls_do_not_wait_for_the_composite() {
+    async fn author_calls_do_not_wait_for_tweets() {
         let sources = InMemorySources::default()
             .tweet(1, 10)
             .user(10, suspended())
             .edge(Graph::Follows, VIEWER, 10)
-            .fault(Source::TesComposite, Fault::Hangs);
+            .fault(Source::TesTweet, Fault::Hangs);
         let raw = [raw(1, None)];
         let started = tokio::time::Instant::now();
         let hydration = hydrate(&sources, SafetyLevel::TimelineHome, Some(VIEWER), &raw);
@@ -639,9 +642,9 @@ mod tests {
             [
                 "GizmoduckAuthor",
                 "SafetyLabels",
-                "TesComposite",
                 "TesConversationControl",
-                "TesPureCore"
+                "TesPureCore",
+                "TesTweet"
             ]
         );
 
@@ -656,11 +659,18 @@ mod tests {
         assert!(!logged_in.calls().contains(&Source::ViewerCountry));
         assert_eq!(
             logged_in.selects(),
-            [vec![EdgeQuery {
-                graph: Graph::Blocks,
-                direction: EdgeDirection::Reverse,
-                destination_ids: vec![10],
-            }]]
+            [vec![
+                EdgeQuery {
+                    graph: Graph::Follows,
+                    direction: EdgeDirection::Forward,
+                    destination_ids: vec![10],
+                },
+                EdgeQuery {
+                    graph: Graph::Blocks,
+                    direction: EdgeDirection::Reverse,
+                    destination_ids: vec![10],
+                },
+            ]]
         );
     }
 
@@ -668,7 +678,7 @@ mod tests {
     async fn filter_all_calls_pure_core_only_and_keeps_the_request_side_viewer() {
         let sources = InMemorySources::default()
             .tweet(1, 10)
-            .composite(1, exclusive_tweet());
+            .tweet_features(1, exclusive_tweet());
         let hydrated = hydrate(
             &sources,
             SafetyLevel::FilterAll,
@@ -682,6 +692,7 @@ mod tests {
             Viewer::LoggedIn {
                 id: VIEWER,
                 profile: ViewerProfile::default(),
+                has_age_verified_18_label: false,
             }
         );
         assert_eq!(hydrated.viewer_features.country_code.as_deref(), Some("us"));
@@ -691,12 +702,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_viewer_call_fails_both_viewer_nodes_unverified() {
+        use crate::hydration::plan::HydrationPlan;
+        use xai_core_entities::entities::{Label, Labels};
+        use xai_x_thrift::user_labels::LabelValue;
+        let viewer_nodes = Hydrators::of(Hydrator::ViewerProfile).with(Hydrator::ViewerLabels);
+        let labeled = GizmoduckUser {
+            labels: Labels {
+                labels: vec![Label {
+                    label_value: LabelValue::AGE_VERIFIED_18.0,
+                    created_at_msec: 0,
+                }],
+            },
+            ..Default::default()
+        };
+        let sources = InMemorySources::default()
+            .tweet(1, 10)
+            .viewer(VIEWER, labeled)
+            .fault(Source::GizmoduckViewer, Fault::Fails);
+        let hydrated = HydrationPlan::new(SafetyLevel::TimelineHomeHydration, viewer_nodes)
+            .hydrate(
+                &sources,
+                HydrationRequest::new(
+                    Some(VIEWER),
+                    None,
+                    ClientCapability::default(),
+                    &[raw(1, None)],
+                ),
+            )
+            .await;
+        assert_eq!(hydrated.candidates[0].failed, viewer_nodes);
+        assert_eq!(
+            hydrated.viewer_features.viewer,
+            Viewer::LoggedIn {
+                id: VIEWER,
+                profile: ViewerProfile::default(),
+                has_age_verified_18_label: false,
+            }
+        );
+    }
+
+    #[tokio::test]
     async fn a_level_that_plans_the_viewer_profile_decodes_it() {
         let sources = InMemorySources::default().viewer(
             VIEWER,
-            ViewerData {
-                user_exists: true,
-                age_in_years: Some(30),
+            GizmoduckUser {
+                extended_profile: Some(ExtendedProfile {
+                    age_in_years: Some(30),
+                }),
                 ..Default::default()
             },
         );
@@ -713,8 +766,8 @@ mod tests {
             InMemorySources::default()
                 .tweet(1, 10)
                 .tweet(2, 20)
-                .composite(1, exclusive_tweet())
-                .composite(2, exclusive_tweet())
+                .tweet_features(1, exclusive_tweet())
+                .tweet_features(2, exclusive_tweet())
                 .edge(Graph::SuperFollows, VIEWER, 30)
         };
         let raw = [raw(1, None), raw(2, None), raw(1, None), raw(3, Some(40))];
@@ -722,7 +775,7 @@ mod tests {
             let sources = sources();
             let hydrated = hydrate(&sources, SafetyLevel::TimelineHome, viewer_id, &raw).await;
             assert_eq!(sources.keys(Source::TesPureCore), [vec![1, 2, 3]]);
-            assert_eq!(sources.keys(Source::TesComposite), [vec![1, 2, 3]]);
+            assert_eq!(sources.keys(Source::TesTweet), [vec![1, 2, 3]]);
             let exclusive = (Some(30), viewer_id.is_some());
             assert_eq!(
                 hydrated
@@ -755,7 +808,11 @@ mod tests {
         sources
             .selects()
             .into_iter()
-            .filter(|queries| queries.iter().any(|query| query.graph == Graph::Follows))
+            .filter(|queries| {
+                queries.iter().any(|query| {
+                    query.graph == Graph::Follows && query.direction == EdgeDirection::Reverse
+                })
+            })
             .collect()
     }
 
@@ -818,7 +875,7 @@ mod tests {
         );
         assert!(hydrated.failed_ids.is_empty());
 
-        let failed = world().fail_graph(Graph::Follows);
+        let failed = world().fail_graph(Graph::SuperFollows);
         let hydrated = hydrate(
             &failed,
             SafetyLevel::TimelineHomeHydration,
@@ -1013,15 +1070,21 @@ mod tests {
     #[tokio::test]
     async fn gizmoduck_calls_ask_for_every_field_any_level_reads() {
         use QueryFields::{ACCOUNT, EXTENDED_PROFILE, LABELS, SAFETY};
-        for level in [
-            SafetyLevel::TimelineHome,
-            SafetyLevel::TimelineHomeHydration,
+        for (level, viewer_fields) in [
+            (
+                SafetyLevel::TimelineHome,
+                vec![ACCOUNT, EXTENDED_PROFILE, SAFETY],
+            ),
+            (
+                SafetyLevel::TimelineHomeHydration,
+                vec![ACCOUNT, EXTENDED_PROFILE, SAFETY, LABELS],
+            ),
         ] {
             let sources = InMemorySources::default().tweet(1, 10);
             hydrate(&sources, level, Some(VIEWER), &[raw(1, None)]).await;
             assert_eq!(
                 sources.fields(Source::GizmoduckViewer),
-                [vec![ACCOUNT, EXTENDED_PROFILE, SAFETY]],
+                [viewer_fields],
                 "{level:?}"
             );
             assert_eq!(
@@ -1064,7 +1127,7 @@ mod tests {
                     },
                 )
                 .tweet(2, 20)
-                .composite(1, exclusive_tweet())
+                .tweet_features(1, exclusive_tweet())
                 .control(1, control(Community, 30, &[]))
                 .control(2, control(Co, 30, &["us"]))
                 .tweet(3, 20)
@@ -1079,7 +1142,7 @@ mod tests {
                     "GizmoduckAuthor",
                 ],
             ),
-            (TimelineHome, Source::TesComposite, &["Flock super_follows"]),
+            (TimelineHome, Source::TesTweet, &["Flock super_follows"]),
             (TimelineHome, Source::SafetyLabels, &[]),
             (TimelineHome, Source::GizmoduckViewer, &[]),
             (TimelineHome, Source::GizmoduckAuthor, &[]),
@@ -1087,11 +1150,11 @@ mod tests {
             (
                 TimelineHomeHydration,
                 Source::TesPureCore,
-                &["Flock blocks", "GizmoduckAuthor"],
+                &["Flock follows,blocks", "GizmoduckAuthor"],
             ),
             (
                 TimelineHomeHydration,
-                Source::TesComposite,
+                Source::TesTweet,
                 &["Flock super_follows"],
             ),
             (

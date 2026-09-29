@@ -3,6 +3,7 @@ use xai_core_entities::entities::{EditControl, TakedownReason};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MediaFeature {
     pub has_media: bool,
+    pub has_uploaded_media: bool,
     pub has_dmca_media: bool,
     pub geo_allow_list: Vec<String>,
     pub geo_deny_list: Vec<String>,

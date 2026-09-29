@@ -16,12 +16,18 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     FilterAll,
                     Role::NonFollower,
-                    dropped(FilteredReason::UnspecifiedReason, "FilterAllRule"),
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "filter_all/drop/unspecified",
+                    ),
                 ),
                 (
                     FilterAll,
                     Role::Author,
-                    dropped(FilteredReason::UnspecifiedReason, "FilterAllRule"),
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "filter_all/drop/unspecified",
+                    ),
                 ),
                 (TimelineHome, Role::NonFollower, allow()),
                 (TimelineHome, Role::LoggedOut, allow()),
@@ -31,7 +37,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::As("read_only", read_only_viewer(VIEWER_ID)),
                     limited(
                         LimitedEngagementReason::ReadonlyViewer,
-                        "ReadOnlyViewerLimitedActionsRule",
+                        "read_only_viewer/limited_engagement",
                     ),
                 ),
                 (
@@ -39,7 +45,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::As("read_only_author", read_only_viewer(AUTHOR_ID)),
                     limited(
                         LimitedEngagementReason::ReadonlyViewer,
-                        "ReadOnlyViewerLimitedActionsRule",
+                        "read_only_viewer/limited_engagement",
                     ),
                 ),
             ],

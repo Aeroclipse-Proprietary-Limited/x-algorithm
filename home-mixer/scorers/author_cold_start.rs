@@ -201,27 +201,6 @@ fn author_corpus(
         .collect()
 }
 
-fn apply_moe_ranking_policy(
-    arm: ViewerArm,
-    candidates: &[PostCandidate],
-    corpus: &[AuthorCorpus],
-    scores: &[f64],
-) -> (Vec<f64>, Vec<bool>) {
-    let mut out = scores.to_vec();
-    let mut zeroed = vec![false; scores.len()];
-    for (i, c) in candidates.iter().enumerate() {
-        if !is_arm_gated_retrieval(c) {
-            continue;
-        }
-        let keep = matches!(arm, ViewerArm::Treatment) && corpus[i] == AuthorCorpus::Treatment;
-        if !keep {
-            out[i] = 0.0;
-            zeroed[i] = true;
-        }
-    }
-    (out, zeroed)
-}
-
 fn cold_start_target(params: &ColdStartParams, scores: &[f64]) -> Option<(usize, f64)> {
     let mut ranked = scores.to_vec();
     ranked.sort_by(|a, b| b.total_cmp(a));
@@ -236,7 +215,7 @@ fn cold_start_target(params: &ColdStartParams, scores: &[f64]) -> Option<(usize,
 
 fn cold_start_corpus_eligible(arm: ViewerArm, c: &PostCandidate, corpus: AuthorCorpus) -> bool {
     match arm {
-        ViewerArm::Holdout => !is_arm_gated_retrieval(c),
+        ViewerArm::Holdout => true,
         ViewerArm::Control => corpus == AuthorCorpus::Control && !is_arm_gated_retrieval(c),
         ViewerArm::Treatment => corpus == AuthorCorpus::Treatment,
     }
@@ -353,7 +332,6 @@ pub(crate) struct ColdStartLift {
 
 pub(crate) struct ColdStartOutcome {
     pub scores: Vec<f64>,
-    pub author_policy_zeroed: Vec<bool>,
     pub lift: Option<ColdStartLift>,
 }
 
@@ -400,26 +378,23 @@ impl AuthorColdStart {
         if !params.enabled {
             return ColdStartOutcome {
                 scores: scores.to_vec(),
-                author_policy_zeroed: vec![false; scores.len()],
                 lift: None,
             };
         }
 
-        let arm = params.arm;
-
-        let (mut effective, author_policy_zeroed) =
-            apply_moe_ranking_policy(arm, candidates, &corpus, scores);
-        let mut lift = None;
-        if let Some((rank, target)) = cold_start_target(&params, scores) {
-            let (lifted, index) =
-                apply_cold_start(&params, candidates, &effective, &corpus, target);
-            effective = lifted;
-            lift = index.map(|index| ColdStartLift { index, rank });
-        }
-        ColdStartOutcome {
-            scores: effective,
-            author_policy_zeroed,
-            lift,
+        match cold_start_target(&params, scores) {
+            Some((rank, target)) => {
+                let (lifted, index) =
+                    apply_cold_start(&params, candidates, scores, &corpus, target);
+                ColdStartOutcome {
+                    scores: lifted,
+                    lift: index.map(|index| ColdStartLift { index, rank }),
+                }
+            }
+            None => ColdStartOutcome {
+                scores: scores.to_vec(),
+                lift: None,
+            },
         }
     }
 }
@@ -648,15 +623,15 @@ rust_home_mixer:
     }
 
     #[test]
-    fn holdout_zeros_moe_and_cold_starts_non_moe() {
+    fn holdout_keeps_and_cold_starts_arm_gated_retrieval() {
         let author_cold_start = cold_start_with_arms(vec![], vec![]);
         let candidates = vec![
-            cold_start_candidate(1, minutes(10), 3),
+            cold_start_candidate(1, minutes(10), 1000),
             moe_candidate(2, minutes(20), 3),
         ];
         let result =
-            author_cold_start.apply(&codivert_query(false, false), &candidates, &[5.0, 40.0]);
-        assert_eq!(result, vec![40.0, 0.0]);
+            author_cold_start.apply(&codivert_query(false, false), &candidates, &[40.0, 5.0]);
+        assert_eq!(result, vec![40.0, 40.0]);
     }
 
     fn cold_retrieval_candidate(
@@ -671,7 +646,7 @@ rust_home_mixer:
     }
 
     #[test]
-    fn cold_retrieval_is_gated_like_moe() {
+    fn cold_retrieval_keeps_its_score_in_every_arm() {
         let author_cold_start = cold_start_with_arms(vec![2], vec![1]);
         let candidates = vec![
             cold_start_candidate(1, minutes(10), 3),
@@ -680,17 +655,17 @@ rust_home_mixer:
         let scores = [5.0, 40.0];
 
         let holdout = author_cold_start.apply(&codivert_query(false, false), &candidates, &scores);
-        assert_eq!(holdout, vec![40.0, 0.0]);
+        assert_eq!(holdout, vec![5.0, 40.0]);
 
         let control = author_cold_start.apply(&codivert_query(true, false), &candidates, &scores);
-        assert_eq!(control, vec![40.0, 0.0]);
+        assert_eq!(control, vec![40.0, 40.0]);
 
         let treatment = author_cold_start.apply(&codivert_query(false, true), &candidates, &scores);
         assert_eq!(treatment, vec![5.0, 40.0]);
     }
 
     #[test]
-    fn control_viewer_zeros_moe_and_cold_starts_control_corpus_only() {
+    fn control_viewer_keeps_moe_and_cold_starts_control_corpus_only() {
         let author_cold_start = cold_start_with_arms(vec![2], vec![1]);
         let candidates = vec![
             cold_start_candidate(1, minutes(10), 3),
@@ -706,7 +681,7 @@ rust_home_mixer:
         assert_eq!(result[0], 100.0);
         assert_eq!(result[1], 100.0);
         assert_eq!(result[2], 90.0);
-        assert_eq!(result[3], 0.0);
+        assert_eq!(result[3], 80.0);
     }
 
     #[test]

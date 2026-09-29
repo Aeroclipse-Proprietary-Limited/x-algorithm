@@ -19,7 +19,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::As("in_us", viewer_in_country("us")),
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropLegalTakendownPostRule",
+                        "legal_takedown/drop/unspecified",
                     ),
                 ),
                 (TimelineHome, Role::NonFollower, allow()),
@@ -41,7 +41,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::As("in_us", viewer_in_country("us")),
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropLegalTakendownPostRule",
+                        "legal_takedown/drop/unspecified",
                     ),
                 ),
                 (
@@ -49,7 +49,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropLegalTakendownPostRule",
+                        "legal_takedown/drop/unspecified",
                     ),
                 ),
             ],
@@ -71,7 +71,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::NonFollower,
                 dropped(
                     FilteredReason::UnspecifiedReason,
-                    "DropLegalTakendownPostRule",
+                    "legal_takedown/drop/unspecified",
                 ),
             )],
         },
@@ -85,7 +85,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::NonFollower,
                 dropped(
                     FilteredReason::UnspecifiedReason,
-                    "DropLegalTakendownPostRule",
+                    "legal_takedown/drop/unspecified",
                 ),
             )],
         },
@@ -109,7 +109,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropLegalTakendownPostRule",
+                        "legal_takedown/drop/unspecified",
                     ),
                 ),
                 (TimelineHome, Role::Author, allow()),
@@ -126,7 +126,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::As("in_de", viewer_in_country("de")),
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropLocalLawsTakendownPostRule",
+                        "local_laws_takedown/drop/unspecified",
                     ),
                 ),
                 (
@@ -170,7 +170,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::As("in_us", viewer_in_country("us")),
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropLegalTakendownPostRule",
+                        "legal_takedown/drop/unspecified",
                     ),
                 ),
                 (
@@ -178,7 +178,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DropLegalTakendownPostRule",
+                        "legal_takedown/drop/unspecified",
                     ),
                 ),
             ],

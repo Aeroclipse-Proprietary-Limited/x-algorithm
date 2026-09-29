@@ -1,9 +1,10 @@
 use super::builders::labeled;
 use super::{Role, Row};
-use crate::models::SafetyLabelType;
-use crate::rules::fixtures::{allow, dropped};
+use crate::models::{ClientCapability, SafetyLabelType, ViewerFeatures};
+use crate::rules::fixtures::{allow, dropped, viewer, AUTHOR_ID, VIEWER_ID};
 use crate::rules::SafetyLevel::{
-    ImmersiveExpandedRecommendations, TimelineHome, TimelineHomeRecommendations,
+    ImmersiveExpandedRecommendations, TimelineHome, TimelineHomeHydration,
+    TimelineHomeRecommendations,
 };
 use xai_visibility_filtering::models::FilteredReason;
 
@@ -18,7 +19,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "MaliciousUrlOonDropRule",
+                        "malicious_url/drop/undesirable",
                     ),
                 ),
                 (
@@ -26,7 +27,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "MaliciousUrlOonDropRule",
+                        "malicious_url/drop/undesirable",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -40,12 +41,18 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::ContainNsfwMedia, "NsfwHighRecallDropRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_high_recall/drop/nsfw_media",
+                    ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::Follower,
-                    dropped(FilteredReason::ContainNsfwMedia, "NsfwHighRecallDropRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_high_recall/drop/nsfw_media",
+                    ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
             ],
@@ -59,7 +66,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "DoNotAmplifyOonDropRule",
+                        "do_not_amplify/drop/undesirable",
                     ),
                 ),
                 (
@@ -67,7 +74,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "DoNotAmplifyOonDropRule",
+                        "do_not_amplify/drop/undesirable",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -82,7 +89,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "SpamHighRecallDropRule",
+                        "spam_high_recall/drop/undesirable",
                     ),
                 ),
                 (
@@ -90,7 +97,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "SpamHighRecallDropRule",
+                        "spam_high_recall/drop/undesirable",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -100,7 +107,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "SpamHighRecallDropRule",
+                        "spam_high_recall/drop/undesirable",
                     ),
                 ),
             ],
@@ -114,7 +121,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "FosnrAbuseInsultsOonDropRule",
+                        "fosnr_abuse_insults/drop/undesirable",
                     ),
                 ),
                 (
@@ -122,12 +129,59 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::PossiblyUndesirable,
-                        "FosnrAbuseInsultsOonDropRule",
+                        "fosnr_abuse_insults/drop/undesirable",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
                 (TimelineHome, Role::NonFollower, allow()),
+                (
+                    TimelineHomeHydration,
+                    Role::NonFollower,
+                    dropped(
+                        FilteredReason::PossiblyUndesirable,
+                        "fosnr_abuse_insults_non_follower/drop/undesirable",
+                    ),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::LoggedOut,
+                    dropped(
+                        FilteredReason::PossiblyUndesirable,
+                        "fosnr_abuse_insults_non_follower/drop/undesirable",
+                    ),
+                ),
+                (TimelineHomeHydration, Role::Follower, allow()),
+                (
+                    TimelineHomeHydration,
+                    Role::As("client_without_fosnr", client_without_fosnr(VIEWER_ID)),
+                    dropped(
+                        FilteredReason::PossiblyUndesirable,
+                        "fosnr_fallback/drop/undesirable",
+                    ),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::As(
+                        "author_on_client_without_fosnr",
+                        client_without_fosnr(AUTHOR_ID),
+                    ),
+                    dropped(
+                        FilteredReason::PossiblyUndesirable,
+                        "fosnr_fallback/drop/undesirable",
+                    ),
+                ),
             ],
         },
     ]
+}
+
+fn client_without_fosnr(viewer_id: u64) -> ViewerFeatures {
+    ViewerFeatures {
+        client_capability: ClientCapability {
+            fosnr_rules: false,
+            fosnr_fallback_drops: true,
+            ..ClientCapability::default()
+        },
+        ..viewer(viewer_id)
+    }
 }

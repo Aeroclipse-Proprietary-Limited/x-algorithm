@@ -192,6 +192,7 @@ Stages can be switched on and off individually, with defaults in [`home-mixer/pa
 │                                                                                          │
 │    <a href="abuse-enforcement-service/">abuse-enforcement-service/</a>  reads model scores about an account. Its                  │
 │       rules label the account or its posts, challenge it, or suspend it.                 │
+│       It does not re-apply an action overturned on appeal (<a href="abuse-ledger-service/">abuse-ledger-service/</a>).       │
 │                                                                                          │
 │    <a href="safety-label-user-agg/">safety-label-user-agg/</a>  labels an account for what its posts collected.               │
 │                                                                                          │
@@ -312,6 +313,7 @@ These produce the scores and labels that Visibility Filtering reads.
 | [`botmaker/`](botmaker/)                                       | That rule engine: the language rules are written in, its compiler, and its runtime.                                                                                                                           |
 | [`botmaker-rules/`](botmaker-rules/)                           | The rules `scarecrow` loads. To reduce the risk of gaming to circumvent these systems, some rules aren't currently in this repository.                                                                        |
 | [`abuse-enforcement-service/`](abuse-enforcement-service/)     | Acts on model scores about an account rather than on events: labels it or its posts, challenges it, or suspends it.                                                                                           |
+| [`abuse-ledger-service/`](abuse-ledger-service/)               | Answers whether an account has an active appeal hold: when an enforcement is overturned on appeal, `abuse-enforcement-service` does not re-apply that action for a fixed period, set per appeal queue.        |
 | [`safety-label-user-agg/`](safety-label-user-agg/)             | Labels an account for what its posts collected.                                                                                                                                                               |
 | [`visibility-filtering-client/`](visibility-filtering-client/) | The client callers use to reach visibility filtering, and the post safety-label types it answers with.                                                                                                        |
 | [`under-the-hood/`](under-the-hood/)                           | Builds the per-account [Under the Hood](#under-the-hood-label-transparency-tool) report: daily jobs collect the labels applied to an account and its posts, which the serving layer aggregates over a period, and displays as a [page](under-the-hood/jetfuel/) or JSON file. |

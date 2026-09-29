@@ -1,17 +1,117 @@
 use crate::hydration::Hydrator;
 use crate::models::{
-    AuthorFeatures, AuthorLabel, ConversationControlFeatures, Decided, HydratedTweetCandidate,
-    LimitedEngagement, LimitedEngagementReason, MediaInterstitial, SafetyLabelMap, SafetyLabelType,
-    TweetFeatures, Verdict, Viewer, ViewerFeatures, ViewerProfile, Withholding,
+    AuthorFeatures, AuthorLabel, ClientCapability, ConversationControlFeatures, Decided,
+    DropReason, HydratedTweetCandidate, LimitedEngagement, LimitedEngagementReason,
+    MediaInterstitial, MediaRestriction, NsfwViewerDropReason, SafetyLabelMap, SafetyLabelType,
+    TombstoneReason, TweetFeatures, Verdict, VerifyBlurSupport, Viewer, ViewerFeatures,
+    ViewerProfile, Withholding,
 };
 use std::collections::HashSet;
 use xai_core_entities::entities::{ConversationControl, ConversationControlArm};
 use xai_visibility_filtering::models::FilteredReason;
-use xai_x_thrift::action::InterstitialReason;
+use xai_x_thrift::action::{InterstitialAction, InterstitialReason};
 
 const TWEET_ID: u64 = 1;
 pub(super) const AUTHOR_ID: u64 = 100;
 pub(crate) const VIEWER_ID: u64 = 999;
+
+pub(crate) struct ClientClass {
+    pub(crate) name: &'static str,
+    pub(crate) app_id: i64,
+    pub(crate) user_agent: &'static str,
+    pub(crate) capability: ClientCapability,
+}
+
+pub(crate) const CLIENT_CLASSES: [ClientClass; 7] = {
+    use VerifyBlurSupport::{AndroidNeedsUpdate, IosNeedsUpdate, Supported, Unsupported};
+    const RWEB: i64 = 3033300;
+    const IPHONE: i64 = 129032;
+    const ANDROID: i64 = 258901;
+    const MAC: i64 = 557701;
+    const fn class(
+        name: &'static str,
+        app_id: i64,
+        user_agent: &'static str,
+        verify_blur_support: VerifyBlurSupport,
+        modern_blur: bool,
+        gore_blur_ignores_settings: bool,
+    ) -> ClientClass {
+        ClientClass {
+            name,
+            app_id,
+            user_agent,
+            capability: ClientCapability {
+                verify_blur_support: Some(verify_blur_support),
+                modern_blur,
+                stale_tweet_limits: true,
+                gore_blur_ignores_settings,
+                fosnr_rules: true,
+                fosnr_fallback_drops: false,
+            },
+        }
+    }
+    [
+        class(
+            "web",
+            RWEB,
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            Supported,
+            true,
+            true,
+        ),
+        class(
+            "ios_current",
+            IPHONE,
+            "Twitter-iPhone/11.11.5 iOS/17.0 (Apple;iPhone15,2;;;;;1;2022)",
+            Supported,
+            true,
+            true,
+        ),
+        class(
+            "ios_outdated",
+            IPHONE,
+            "Twitter-iPhone/11.11.4 iOS/17.0 (Apple;iPhone15,2;;;;;1;2022)",
+            IosNeedsUpdate,
+            true,
+            true,
+        ),
+        class(
+            "android_current",
+            ANDROID,
+            "TwitterAndroid/11.11.0-release.00 (311110000-r-0) Pixel 7/14 \
+             (Google;panther;google;panther;0;;1;2022)",
+            Supported,
+            true,
+            true,
+        ),
+        class(
+            "android_outdated",
+            ANDROID,
+            "TwitterAndroid/11.10.9-release.00 (311109000-r-0) Pixel 7/14 \
+             (Google;panther;google;panther;0;;1;2022)",
+            AndroidNeedsUpdate,
+            true,
+            true,
+        ),
+        class(
+            "mac_app",
+            MAC,
+            "Twitter-Mac/11.11.5 macOS/14.0 (Apple;Mac14,2)",
+            Unsupported,
+            false,
+            false,
+        ),
+        class(
+            "third_party_client",
+            0,
+            "ThirdPartyClient/2.0",
+            Unsupported,
+            false,
+            false,
+        ),
+    ]
+};
 
 pub(crate) fn allow() -> Verdict {
     Verdict::Shown {
@@ -22,18 +122,59 @@ pub(crate) fn allow() -> Verdict {
 
 pub(crate) fn dropped(reason: FilteredReason, by: &'static str) -> Verdict {
     Verdict::Withheld(Decided {
-        value: Withholding::Drop(reason),
+        value: Withholding::Drop(DropReason::Legacy(reason)),
+        by,
+    })
+}
+
+pub(crate) fn nsfw_viewer_dropped(reason: NsfwViewerDropReason, by: &'static str) -> Verdict {
+    Verdict::Withheld(Decided {
+        value: Withholding::Drop(DropReason::NsfwViewer(reason)),
+        by,
+    })
+}
+
+pub(crate) fn tombstoned(reason: TombstoneReason, by: &'static str) -> Verdict {
+    Verdict::Withheld(Decided {
+        value: Withholding::Tombstone(reason),
         by,
     })
 }
 
 pub(crate) fn blurred(reason: InterstitialReason, by: &'static str) -> Verdict {
+    media_blurred(reason, None, by)
+}
+
+pub(crate) fn verify_blurred(reason: InterstitialReason, by: &'static str) -> Verdict {
+    media_blurred(
+        reason,
+        Some(InterstitialAction::AGE_VERIFICATION_PROMPT),
+        by,
+    )
+}
+
+fn media_blurred(
+    reason: InterstitialReason,
+    prompt: Option<InterstitialAction>,
+    by: &'static str,
+) -> Verdict {
     Verdict::Shown {
         media: Some(Decided {
-            value: MediaInterstitial {
+            value: MediaRestriction::MediaInterstitial(MediaInterstitial {
                 legacy: FilteredReason::ContainNsfwMedia,
                 reason,
-            },
+                prompt,
+            }),
+            by,
+        }),
+        engagement: None,
+    }
+}
+
+pub(crate) fn legacy_interstitial(by: &'static str) -> Verdict {
+    Verdict::Shown {
+        media: Some(Decided {
+            value: MediaRestriction::NsfwInterstitial,
             by,
         }),
         engagement: None,
@@ -64,6 +205,7 @@ pub(crate) fn viewer(id: u64) -> ViewerFeatures {
         viewer: Viewer::LoggedIn {
             id,
             profile: ViewerProfile::default(),
+            has_age_verified_18_label: false,
         },
         ..Default::default()
     }
@@ -74,6 +216,7 @@ pub(crate) fn viewer_with_profile(profile: ViewerProfile) -> ViewerFeatures {
         viewer: Viewer::LoggedIn {
             id: VIEWER_ID,
             profile,
+            has_age_verified_18_label: false,
         },
         ..Default::default()
     }

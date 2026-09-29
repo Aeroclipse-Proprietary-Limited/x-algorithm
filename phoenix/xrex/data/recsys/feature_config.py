@@ -18,6 +18,8 @@ class CategoricalFeature(enum.IntEnum):
     viewCountBucketSeq = 13
     authorIsNsfwSeq = 14
     webConvTrackingIntegrationSeq = 15
+    exactPhraseSeq = 16
+    matchedWordFractionBucketSeq = 17
 
 
 COMPUTED_CATEGORICAL_FEATURE_NAMES: frozenset[str] = frozenset(
@@ -31,6 +33,7 @@ COMPUTED_CATEGORICAL_FEATURE_NAMES: frozenset[str] = frozenset(
         "quoteCountBucketSeq",
         "viewCountBucketSeq",
         "authorIsNsfwSeq",
+        "matchedWordFractionBucketSeq",
     }
 )
 
@@ -48,7 +51,7 @@ class BoolFeature(enum.IntEnum):
 
 
 class FloatFeature(enum.IntEnum):
-    pass
+    matchedWordFractionSeq = 1
 
 
 class Int64Feature(enum.IntEnum):

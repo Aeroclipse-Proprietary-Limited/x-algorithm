@@ -97,12 +97,7 @@ impl ValueTarget {
         Self::new(ValueEvent::AddToCart, ValueLevel::ViewThrough),
     ];
 
-    pub const PUBLISHED: [ValueTarget; 4] = [
-        Self::PURCHASE_CT,
-        Self::PURCHASE_VT,
-        Self::new(ValueEvent::ContentView, ValueLevel::ClickThrough),
-        Self::new(ValueEvent::AddToCart, ValueLevel::ClickThrough),
-    ];
+    pub const PUBLISHED: [ValueTarget; 6] = Self::ALL;
 
     pub const REQUIRED: [ValueTarget; 2] = [Self::PURCHASE_CT, Self::PURCHASE_VT];
 
@@ -249,10 +244,10 @@ mod tests {
             assert_eq!(bytes[0], ((3 + i as u8) << 3) | 1, "{target:?} tag");
         }
         let mut full = baseline(1_900_000_000_000_000_000, 4_503_599_700_000_000);
-        for target in ValueTarget::PUBLISHED {
+        for target in ValueTarget::ALL {
             target.set_mean(&mut full, 12.5);
         }
-        assert!(full.encode_to_vec().len() <= 64);
+        assert_eq!(full.encode_to_vec().len(), 73);
         let decoded = PurchaseValueBaseline::decode(full.encode_to_vec().as_slice()).unwrap();
         assert_eq!(decoded, full);
     }

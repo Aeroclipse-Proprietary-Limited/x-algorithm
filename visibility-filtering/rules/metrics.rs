@@ -224,7 +224,8 @@ fn observe_vm(metric: &str, labels: &[(&str, &str)], value: f64) {
 mod tests {
     use super::*;
     use crate::models::{
-        Decided, LimitedEngagement, LimitedEngagementReason, MediaInterstitial, Withholding,
+        Decided, DropReason, LimitedEngagement, LimitedEngagementReason, MediaInterstitial,
+        MediaRestriction, Withholding,
     };
     use std::fs;
     use std::path::Path;
@@ -240,7 +241,7 @@ mod tests {
 
     fn drop_by(rule: &'static str) -> Verdict {
         Verdict::Withheld(Decided {
-            value: Withholding::Drop(FilteredReason::UnspecifiedReason),
+            value: Withholding::Drop(DropReason::Legacy(FilteredReason::UnspecifiedReason)),
             by: rule,
         })
     }
@@ -273,10 +274,11 @@ mod tests {
         let d = drop_by("nsfw_media");
         let both = Verdict::Shown {
             media: Some(Decided {
-                value: MediaInterstitial {
+                value: MediaRestriction::MediaInterstitial(MediaInterstitial {
                     legacy: FilteredReason::ContainNsfwMedia,
                     reason: InterstitialReason::Sensitive(true),
-                },
+                    prompt: None,
+                }),
                 by: "nsfw_media",
             }),
             engagement: Some(limit_by("conversation_control")),

@@ -201,6 +201,16 @@ def _col_null_filled(
     return typing.cast(npt.NDArray[_T], arr)
 
 
+def _bool_col_as_categorical(
+    rb: pa.RecordBatch, col: str, batch_size: int
+) -> npt.NDArray[np.int16]:
+    values = rb.column(col).values
+    valid = values.is_valid().to_numpy(zero_copy_only=False)
+    filled = values.fill_null(False).to_numpy(zero_copy_only=False).astype(np.int16)
+    arr = np.where(valid, filled + 1, 0).astype(np.int16).reshape(batch_size, -1)
+    return typing.cast(npt.NDArray[np.int16], arr)
+
+
 class PostSeq(TypedDict):
     impr_ts: npt.NDArray[np.int32] | None
     actions: npt.NDArray[np.bool_] | None
@@ -580,6 +590,12 @@ def from_record_batch(
     _author_is_nsfw = ((safety_label_mask >> AUTHOR_NSFW_BIT) & 1).astype(np.int16)
     hist_raw_categorical["authorIsNsfwSeq"] = _author_is_nsfw
     cand_raw_categorical["authorIsNsfwSeq"] = _author_is_nsfw
+
+    _exact_phrase_col = CategoricalFeature.exactPhraseSeq.name
+    if _exact_phrase_col in record_batch.schema.names:
+        _exact_phrase = _bool_col_as_categorical(record_batch, _exact_phrase_col, batch_size)
+        hist_raw_categorical[_exact_phrase_col] = _exact_phrase
+        cand_raw_categorical[_exact_phrase_col] = _exact_phrase
 
     apps_col = record_batch.column("installedAppsMultiHot")
     user_installed_apps_multihot = (

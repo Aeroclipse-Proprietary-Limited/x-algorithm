@@ -124,9 +124,9 @@ use crate::feature_config::bool_feature::{
     IS_AUTHOR_FOLLOWING_VIEWER_SEQ, IS_AUTHOR_FOLLOWING_VIEWER_SEQ_COLUMN, IS_STALE_POST14D,
 };
 use crate::feature_config::categorical_feature::{
-    AUTHOR_IS_NSFW_SEQ, LOCAL_DAY_OF_WEEK_SEQ, LOCAL_HOUR_OF_DAY_SEQ, PRODUCT_SURFACE_SEQ,
-    PRODUCT_SURFACE_SEQ_COLUMN, TIMEZONE_SEQ, WEB_CONV_TRACKING_INTEGRATION_SEQ,
-    WEB_CONV_TRACKING_INTEGRATION_SEQ_COLUMN,
+    AUTHOR_IS_NSFW_SEQ, EXACT_PHRASE_SEQ, LOCAL_DAY_OF_WEEK_SEQ, LOCAL_HOUR_OF_DAY_SEQ,
+    PRODUCT_SURFACE_SEQ, PRODUCT_SURFACE_SEQ_COLUMN, TIMEZONE_SEQ,
+    WEB_CONV_TRACKING_INTEGRATION_SEQ, WEB_CONV_TRACKING_INTEGRATION_SEQ_COLUMN,
 };
 #[cfg(recsys_ads_dpa)]
 use crate::feature_config::constants::{
@@ -134,6 +134,7 @@ use crate::feature_config::constants::{
     ADS_PRODUCT_KEY_HASH_SCALE, ADS_PRODUCT_KEY_HASH_SCALE_2, ADS_PRODUCT_KEY_TABLE_SIZE,
     STALE_POST_14D_TTL_SEC,
 };
+use crate::feature_config::float_feature::MATCHED_WORD_FRACTION_SEQ;
 use crate::feature_config::int64_feature::{
     FAV_COUNT_SEQ, FAV_COUNT_SEQ_COLUMN, QUOTE_COUNT_SEQ, QUOTE_COUNT_SEQ_COLUMN, REPLY_COUNT_SEQ,
     REPLY_COUNT_SEQ_COLUMN, REPOST_COUNT_SEQ, REPOST_COUNT_SEQ_COLUMN, VIEW_COUNT_SEQ,
@@ -149,8 +150,29 @@ const TIMEZONE_IDX: usize = TIMEZONE_SEQ;
 const LOCAL_HOUR_IDX: usize = LOCAL_HOUR_OF_DAY_SEQ;
 const LOCAL_DOW_IDX: usize = LOCAL_DAY_OF_WEEK_SEQ;
 pub const AUTHOR_IS_NSFW_CATEGORICAL_IDX: usize = AUTHOR_IS_NSFW_SEQ;
+pub const EXACT_PHRASE_CATEGORICAL_IDX: usize = EXACT_PHRASE_SEQ;
 
 const AUTHOR_NSFW_BIT: u64 = 2;
+
+fn exact_phrase_categorical(lexical_match: Option<&pb::SearchLexicalMatch>) -> i32 {
+    match lexical_match {
+        Some(m) => 1 + m.exact_phrase as i32,
+        None => 0,
+    }
+}
+
+fn stamp_matched_word_fraction(
+    dest: &mut [f32],
+    num_features: usize,
+    entry_idx: usize,
+    lexical_match: Option<&pb::SearchLexicalMatch>,
+) {
+    if let Some(m) = lexical_match
+        && num_features > MATCHED_WORD_FRACTION_SEQ
+    {
+        dest[entry_idx * num_features + MATCHED_WORD_FRACTION_SEQ] = m.matched_word_fraction;
+    }
+}
 
 fn stamp_engagement_counts(
     dest: &mut [i64],
@@ -565,9 +587,11 @@ impl InputBuffer {
         );
 
         let mut candidate_int64_features = vec![0i64; candidate_seq_len * n_post_int64];
+        let mut candidate_float_features = vec![0.0f32; candidate_seq_len * n_post_float];
         let mut candidate_is_author_followed = vec![false; candidate_seq_len];
         let mut candidate_is_author_following = vec![false; candidate_seq_len];
         let mut candidate_is_stale_post = vec![false; candidate_seq_len];
+        let mut candidate_exact_phrase = vec![0i32; candidate_seq_len];
         let mut candidate_bool_features = vec![false; candidate_seq_len * n_post_bool];
 
         let stale_post_enabled = model_config.hash_table.enable_stale_post;
@@ -628,7 +652,22 @@ impl InputBuffer {
                 .as_ref()
                 .and_then(|ai| ai.is_following_user)
                 .unwrap_or(false);
+            let lexical_match = candidate.search_lexical_match.as_ref();
+            candidate_exact_phrase[j] = exact_phrase_categorical(lexical_match);
+            stamp_matched_word_fraction(
+                &mut candidate_float_features,
+                n_post_float,
+                j,
+                lexical_match,
+            );
         }
+
+        stamp_i32_as_categorical(
+            &candidate_exact_phrase,
+            &mut categorical_features,
+            n_post_cat,
+            EXACT_PHRASE_CATEGORICAL_IDX,
+        );
 
         let candidate_author_is_nsfw: Vec<i32> = candidate_set
             .candidates
@@ -670,7 +709,7 @@ impl InputBuffer {
             search_query_embeddings: candidate_search_query_embeddings,
             categorical_features,
             bool_features: candidate_bool_features,
-            float_features: vec![0.0f32; candidate_seq_len * n_post_float],
+            float_features: candidate_float_features,
             int64_features: candidate_int64_features,
             impr_ts: candidate_impr_ts,
             post_creation_ts_sec: candidate_post_creation_ts_sec,
@@ -1877,6 +1916,47 @@ mod tests {
                 idx = j * n_post_cat + AUTHOR_IS_NSFW_CATEGORICAL_IDX,
             );
         }
+    }
+
+    #[test]
+    fn search_lexical_match_stamped_with_unset_as_zero() {
+        let n_post_cat = EXACT_PHRASE_CATEGORICAL_IDX + 1;
+        let n_post_float = MATCHED_WORD_FRACTION_SEQ + 1;
+        let mut model_config = test_model_config(n_post_cat);
+        model_config.hash_table.num_post_float_features = n_post_float;
+
+        let lexical = |fraction: f32, exact: bool| pb::SearchLexicalMatch {
+            matched_word_fraction: fraction,
+            exact_phrase: exact,
+        };
+        let candidate_set = pb::CandidateSet {
+            candidates: vec![
+                pb::TweetInfo {
+                    tweet_id: 1,
+                    search_lexical_match: Some(lexical(0.5, false)),
+                    ..Default::default()
+                },
+                pb::TweetInfo {
+                    tweet_id: 2,
+                    search_lexical_match: Some(lexical(1.0, true)),
+                    ..Default::default()
+                },
+                pb::TweetInfo {
+                    tweet_id: 3,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let cand = InputBuffer::new_with_candidates(&model_config, &candidate_set, None);
+
+        let exact_phrase =
+            |j: usize| cand.categorical_features[j * n_post_cat + EXACT_PHRASE_CATEGORICAL_IDX];
+        let fraction = |j: usize| cand.float_features[j * n_post_float + MATCHED_WORD_FRACTION_SEQ];
+        assert_eq!((1, 0.5), (exact_phrase(0), fraction(0)));
+        assert_eq!((2, 1.0), (exact_phrase(1), fraction(1)));
+        assert_eq!((0, 0.0), (exact_phrase(2), fraction(2)));
     }
 
     #[test]

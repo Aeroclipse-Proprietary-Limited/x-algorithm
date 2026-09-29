@@ -224,11 +224,7 @@ pub fn apply_cold_start_decisions(
     scores: &[f64],
     candidates: &[CandidateScoringInputs],
 ) -> Vec<f64> {
-    let mut effective: Vec<f64> = scores
-        .iter()
-        .zip(candidates)
-        .map(|(&s, c)| if c.author_policy_zeroed { 0.0 } else { s })
-        .collect();
+    let mut effective = scores.to_vec();
     let lift = candidates
         .iter()
         .enumerate()
@@ -366,22 +362,11 @@ mod tests {
             is_mutual_follow_author: true,
             ..Default::default()
         };
-        let zeroed_by_cold_start = CandidateScoringInputs {
-            phoenix_scores: PhoenixScores {
-                favorite_score: Some(0.9),
-                ..Default::default()
-            },
-            author_id: 1,
-            in_network: Some(true),
-            author_policy_zeroed: true,
-            ..Default::default()
-        };
         let candidates = [
             mutual_original,
             ineligible_video_oon,
             eligible_video_same_author,
             reported_in_network_reply,
-            zeroed_by_cold_start,
         ];
 
         let offset = 0.001;
@@ -406,24 +391,19 @@ mod tests {
         let weighted_reported_reply =
             (net_reported_reply + negative_weight_magnitude) / total_weight_sum * offset;
 
-        let weighted_zeroed_by_cold_start = 2.0 * 0.9 + offset;
-
         let diversity_second_from_author = (1.0 - 0.25) * 0.5 + 0.25;
-        let diversity_third_from_author = (1.0 - 0.25) * 0.5 * 0.5 + 0.25;
 
         let expected_scores = [
             weighted_mutual_original,
             weighted_ineligible_video_oon * 0.75,
             weighted_eligible_video_same_author * diversity_second_from_author,
             weighted_reported_reply * 0.75,
-            0.0 * diversity_third_from_author,
         ];
         let expected_weighted = [
             weighted_mutual_original,
             weighted_ineligible_video_oon,
             weighted_eligible_video_same_author,
             weighted_reported_reply,
-            weighted_zeroed_by_cold_start,
         ];
 
         let result = compute_value_scores(&weights, &ctx, &candidates);

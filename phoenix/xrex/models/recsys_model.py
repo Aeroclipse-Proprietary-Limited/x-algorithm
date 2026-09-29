@@ -33,6 +33,7 @@ from xrex.data.recsys.feature_config import (
     ENGAGEMENT_COUNT_BUCKET_MAP,
     BoolFeature,
     CategoricalFeature,
+    FloatFeature,
     Int64Feature,
 )
 from xrex.data.recsys.recsys_batch import EMBEDDING_CONFIG, EmbeddingType, RecsysFeaturesBatch
@@ -168,6 +169,16 @@ def compute_engagement_count_bucket(
     bucket = jnp.clip(bucket, 0, max_bucket)
     bucket = jnp.where(raw_counts <= 0, 0, bucket)
     return bucket
+
+
+MATCHED_WORD_FRACTION_NUM_BUCKETS = 6
+
+
+def compute_matched_word_fraction_bucket(fraction: jax.Array, is_set: jax.Array) -> jax.Array:
+    f = fraction.astype(jnp.float32)
+    bucket = jnp.where(f <= 0.0, 1, jnp.where(f < 0.5, 2, jnp.where(f == 0.5, 3, 4)))
+    bucket = jnp.where(f >= 1.0, MATCHED_WORD_FRACTION_NUM_BUCKETS - 1, bucket)
+    return jnp.where(is_set, bucket, 0)
 
 
 def right_anchored_rope_positions(
@@ -330,6 +341,8 @@ class ContextFeaturesConfig(Config):
     enable_author_nsfw: bool = False
 
     enable_day_of_week: bool = True
+
+    enable_search_lexical_match: bool = False
 
 
 def metric_num_tokens(y: jnp.ndarray, valid_mask: jnp.ndarray) -> jnp.ndarray:
@@ -1940,6 +1953,46 @@ class RecsysAggregatedModel(hk.Module):
 
         return stats
 
+    def compute_search_lexical_match_metrics(
+        self,
+        batch: RecsysFeaturesBatch,
+        stats: dict | None = None,
+    ) -> dict:
+        if stats is None:
+            stats = {}
+        if not self.config.context_features.enable_search_lexical_match:
+            return stats
+
+        seq = batch["candidate_seq"]
+        cat = seq.get("categorical_features")
+        floats = seq.get("float_features")
+        hashes = seq.get("post_hashes")
+        exact_idx = CategoricalFeature.exactPhraseSeq.value
+        frac_idx = FloatFeature.matchedWordFractionSeq.value
+        if cat is None or floats is None or hashes is None:
+            return stats
+        if exact_idx >= cat.shape[-1] or frac_idx >= floats.shape[-1]:
+            return stats
+
+        exact_phrase = cast_jax(cat)[:, :, exact_idx]
+        fraction = cast_jax(floats)[:, :, frac_idx].astype(jnp.float32)
+        non_pad = (cast_jax(hashes)[..., 0] != 0).astype(jnp.float32)
+        is_set = (exact_phrase != 0).astype(jnp.float32) * non_pad
+        total = jnp.sum(non_pad)
+        n_set = jnp.sum(is_set)
+        stats["search_lexical_match/frac_set_candidate"] = jnp.where(total > 0, n_set / total, 0.0)
+        stats["search_lexical_match/frac_exact_phrase_candidate"] = jnp.where(
+            n_set > 0, jnp.sum((exact_phrase == 2).astype(jnp.float32) * is_set) / n_set, 0.0
+        )
+        stats["search_lexical_match/mean_matched_word_fraction_candidate"] = jnp.where(
+            n_set > 0, jnp.sum(fraction * is_set) / n_set, 0.0
+        )
+        buckets = compute_matched_word_fraction_bucket(fraction, exact_phrase != 0)
+        stats["search_lexical_match/mean_bucket_candidate"] = jnp.where(
+            n_set > 0, jnp.sum(buckets.astype(jnp.float32) * is_set) / n_set, 0.0
+        )
+        return stats
+
     def compute_author_nsfw_metrics(
         self,
         batch: RecsysFeaturesBatch,
@@ -2090,6 +2143,9 @@ class RecsysAggregatedModel(hk.Module):
             if cat_feat.feature_name == "local_day_of_week":
                 if not ctx_config.enable_day_of_week:
                     continue
+            if cat_feat.feature_name in ("exact_phrase", "matched_word_fraction_bucket"):
+                if not (ctx_config.enable_search_lexical_match and is_candidate):
+                    continue
             if cat_feat.embedding_dim <= 0 or cat_feat.index >= cat_features.shape[-1]:
                 continue
             feat_values = cat_features[:, :, cat_feat.index]
@@ -2112,6 +2168,25 @@ class RecsysAggregatedModel(hk.Module):
             result = result[:, 0, :]
 
         return result
+
+    @staticmethod
+    def set_matched_word_fraction_bucket(
+        cat_features: jax.Array, float_features: jax.Array | None
+    ) -> jax.Array:
+        bucket_idx = CategoricalFeature.matchedWordFractionBucketSeq.value
+        exact_idx = CategoricalFeature.exactPhraseSeq.value
+        frac_idx = FloatFeature.matchedWordFractionSeq.value
+        if (
+            float_features is None
+            or bucket_idx >= cat_features.shape[-1]
+            or exact_idx >= cat_features.shape[-1]
+            or frac_idx >= float_features.shape[-1]
+        ):
+            return cat_features
+        buckets = compute_matched_word_fraction_bucket(
+            float_features[:, :, frac_idx], cat_features[:, :, exact_idx] != 0
+        )
+        return cat_features.at[:, :, bucket_idx].set(buckets.astype(cat_features.dtype))
 
     @hk.transparent
     def build_unified_context_embedding(
@@ -2583,6 +2658,13 @@ class RecsysAggregatedModel(hk.Module):
             cat_features=history_cat_features,
             name="unified_ctx_history",
         )
+
+        if ctx_config.enable_search_lexical_match and candidate_cat_features is not None:
+            raw_cand_float = recsys_features_batch["candidate_seq"].get("float_features")
+            candidate_cat_features = self.set_matched_word_fraction_bucket(
+                candidate_cat_features,
+                None if raw_cand_float is None else cast_jax(raw_cand_float),
+            )
 
         candidate_unified_context = self.build_unified_context_embedding(
             product_surface=cast_jax(recsys_features_batch["candidate_seq"]["product_surface"]),
@@ -3349,6 +3431,7 @@ class RecsysAggregatedModel(hk.Module):
         stats = self.compute_sid_metrics(batch=batch, stats=stats)
         stats = self.compute_engagement_count_metrics(batch=batch, stats=stats)
         stats = self.compute_author_nsfw_metrics(batch=batch, stats=stats)
+        stats = self.compute_search_lexical_match_metrics(batch=batch, stats=stats)
 
         if self.config.use_seqpack and batch.get("packing_layout") is not None:
             stats = self.compute_length_bucketed_metrics(

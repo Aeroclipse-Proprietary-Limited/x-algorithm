@@ -94,7 +94,6 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for VMRanker {
             .map(|i| PostCandidate {
                 weighted_score: Some(local.weighted[i]),
                 score: Some(local.cold_start.scores[i]),
-                author_policy_zeroed: local.cold_start.author_policy_zeroed[i],
                 cold_start_lift_to_rank: local.cold_start.lift_to_rank(i),
                 slate_context: slate_contexts.as_ref().map(|contexts| contexts[i]),
                 ..Default::default()
@@ -139,7 +138,6 @@ impl Scorer<ScoredPostsQuery, PostCandidate> for VMRanker {
     fn update(&self, candidate: &mut PostCandidate, scored: PostCandidate) {
         candidate.weighted_score = scored.weighted_score;
         candidate.score = scored.score;
-        candidate.author_policy_zeroed = scored.author_policy_zeroed;
         candidate.cold_start_lift_to_rank = scored.cold_start_lift_to_rank;
         candidate.slate_context = scored.slate_context;
     }

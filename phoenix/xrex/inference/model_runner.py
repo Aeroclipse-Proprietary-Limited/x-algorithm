@@ -3,6 +3,7 @@
 import concurrent.futures
 import json
 import logging
+import math
 import mmap
 import multiprocessing
 import os
@@ -45,7 +46,7 @@ from xrex.data.parquet_recsys import (
 )
 from xrex.data.recsys import recsys_batch
 from xrex.data.recsys.recsys_batch import TWITTER_EPOCH_MS, RecsysFeaturesBatch
-from xrex.data.recsys.sequence_packing import pack_batch
+from xrex.data.recsys.sequence_packing import compact_candidate_layout, pack_batch
 from xrex.data.retrieval_dataset import PHOENIX_INDEX_BASE, RetrievalDataset
 from xrex.inference import debug_logger, service_registry
 from xrex.inference.h2d import (
@@ -508,6 +509,8 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
 
     inference_batch_size_buckets: tuple[int, ...] = ()
 
+    seqpack_packed_len_fractions: list[float] = field(default_factory=list)
+
     history_seq_len: int = 1000
     candidate_seq_len: int = 1400
 
@@ -600,6 +603,39 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
         if not self.inference_batch_size_buckets:
             return (self.inference_batch_size,)
         return tuple(sorted(set(self.inference_batch_size_buckets)))
+
+    @property
+    def compact_candidate_slots(self) -> bool:
+        if not (self.using_seqpack and self.seqpack_packed_len_fractions):
+            return False
+        return not self.using_fa4
+
+    def full_packed_seq_len(self, bs: int) -> int:
+        mc = self.model_config
+        bs_per_device = bs // self.parallel_config.num_devices_per_process
+        return bs_per_device * (
+            mc.num_user_prefix_tokens + self.history_seq_len + self.candidate_seq_len
+        )
+
+    def packed_seq_lens(self, bs: int) -> tuple[int, ...]:
+        full = self.full_packed_seq_len(bs)
+        if not self.compact_candidate_slots or bs != max(self.sorted_buckets):
+            return (full,)
+        block = self._seqpack_block_size
+        lens = {full}
+        for frac in self.seqpack_packed_len_fractions:
+            n = int(math.ceil(full * float(frac) / block)) * block
+            if 0 < n < full:
+                lens.add(n)
+        return tuple(sorted(lens))
+
+    def select_packed_seq_len(self, bs: int, used: int) -> int:
+        for n in self.packed_seq_lens(bs):
+            if used <= n:
+                return n
+        raise ValueError(
+            f"packed row uses {used} tokens > full length {self.full_packed_seq_len(bs)}"
+        )
 
     def select_bucket(self, orig_batch_size: int) -> int:
         buckets = self.sorted_buckets
@@ -2588,19 +2624,35 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
             self.debug_log_path = path
         return path
 
-    def example_data(self, bs: int) -> RecsysFeaturesBatch:
+    def example_data(self, bs: int, packed_seq_len: int | None = None) -> RecsysFeaturesBatch:
         batch = self.dataset.example_data(bs)
         if self.using_seqpack:
-            batch = pack_batch(
-                batch=batch,
-                num_devices_per_process=self.parallel_config.num_devices_per_process,
-                num_user_prefix_tokens=self.model_config.num_user_prefix_tokens,
-                dist=None,
-                rng=None,
-                block_size=self._seqpack_block_size,
-            )
-            if self.using_fa4:
-                batch = self.add_block_sparse_layout(batch)
+            batch = self._pack_inference_batch(batch, packed_seq_len=packed_seq_len)
+        return batch
+
+    def _pack_inference_batch(
+        self, batch: RecsysFeaturesBatch, *, packed_seq_len: int | None = None
+    ) -> RecsysFeaturesBatch:
+        batch = pack_batch(
+            batch=batch,
+            num_devices_per_process=self.parallel_config.num_devices_per_process,
+            num_user_prefix_tokens=self.model_config.num_user_prefix_tokens,
+            dist=None,
+            rng=None,
+            block_size=self._seqpack_block_size,
+        )
+        if packed_seq_len is not None:
+            layout = batch.get("packing_layout")
+            assert layout is not None
+            if packed_seq_len != int(layout.segment_ids.shape[1]):
+                batch["packing_layout"] = compact_candidate_layout(
+                    batch,
+                    num_user_prefix_tokens=self.model_config.num_user_prefix_tokens,
+                    block_size=self._seqpack_block_size,
+                    packed_seq_len=packed_seq_len,
+                )
+        if self.using_fa4:
+            batch = self.add_block_sparse_layout(batch)
         return batch
 
     def _get_persistent_buffer(
@@ -2892,6 +2944,7 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
         request: RequestBatch | None = None,
         eligible_mask: jax.Array | None = None,
         bucket_size: int | None = None,
+        packed_seq_len: int | None = None,
     ) -> Union[jax.Array, np.ndarray, tuple[jax.Array, jax.Array, jax.Array]]:
         raise NotImplementedError
 
@@ -3462,25 +3515,24 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
     def _warmup_buckets(self, rng: jax.Array) -> None:
         assert isinstance(self.state, RecsysInferenceState)
         for bs in self.sorted_buckets:
-            batch = self._get_persistent_buffer(0, bs)
-            if self.using_seqpack:
-                batch = pack_batch(
-                    batch=batch,
-                    num_devices_per_process=self.parallel_config.num_devices_per_process,
-                    num_user_prefix_tokens=self.model_config.num_user_prefix_tokens,
-                    dist=None,
-                    rng=None,
-                    block_size=self._seqpack_block_size,
+            lens: tuple[int | None, ...] = (
+                self.packed_seq_lens(bs) if self.compact_candidate_slots else (None,)
+            )
+            for n in lens:
+                batch = self._get_persistent_buffer(0, bs)
+                if self.using_seqpack:
+                    batch = self._pack_inference_batch(batch, packed_seq_len=n)
+                out = self.gather_embeddings_and_forward(
+                    self.state, batch, rng, 0, -1, bucket_size=bs, packed_seq_len=n
                 )
-                if self.using_fa4:
-                    batch = self.add_block_sparse_layout(batch)
-            out = self.gather_embeddings_and_forward(self.state, batch, rng, 0, -1, bucket_size=bs)
-            if isinstance(out, jax.Array):
-                out = out.block_until_ready()
-                logger.info(f"Warmup bucket={bs} output shape: {out.shape}")
-            elif isinstance(out, tuple):
-                out = jax.tree.map(lambda x: x.block_until_ready(), out)
-                logger.info(f"Warmup bucket={bs} output shapes: {[x.shape for x in out]}")
+                if isinstance(out, jax.Array):
+                    out = out.block_until_ready()
+                    logger.info(f"Warmup bucket={bs} len={n} output shape: {out.shape}")
+                elif isinstance(out, tuple):
+                    out = jax.tree.map(lambda x: x.block_until_ready(), out)
+                    logger.info(
+                        f"Warmup bucket={bs} len={n} output shapes: {[x.shape for x in out]}"
+                    )
 
     SUPPORTED_MODEL_CONFIGS = (
         RecsysAggregatedModelConfig,
@@ -3895,11 +3947,19 @@ class RankingModelRunner(
     ]
 ):
     forward_jit_by_bs: dict[int, JittedOrCompiled] = field(default_factory=dict, init=False)
+    forward_jit_by_bs_len: dict[tuple[int, int | None], JittedOrCompiled] = field(
+        default_factory=dict, init=False
+    )
 
-    def _rng_and_init_data(self, seq_len: int | None = None, bs: int | None = None):
+    def _rng_and_init_data(
+        self,
+        seq_len: int | None = None,
+        bs: int | None = None,
+        packed_seq_len: int | None = None,
+    ):
         bs = bs or self.inference_batch_size
         if self.using_seqpack:
-            init_data = self.example_data(bs)
+            init_data = self.example_data(bs, packed_seq_len=packed_seq_len)
             rng = jax.ShapeDtypeStruct((2,), jnp.uint32)
         else:
             rng, init_data = super()._rng_and_init_data(seq_len=seq_len)
@@ -4026,6 +4086,7 @@ class RankingModelRunner(
         request: xai_recsys_engine.PredictRequestBatch | None = None,
         eligible_mask: jax.Array | None = None,
         bucket_size: int | None = None,
+        packed_seq_len: int | None = None,
     ) -> tuple[jax.Array, jax.Array, jax.Array]:
         assert isinstance(self.model_config, RecsysAggregatedModelConfig)
 
@@ -4059,7 +4120,11 @@ class RankingModelRunner(
             batch["candidate_seq"]["embedding"] = candidate_multimodal_embeddings
 
         bs = bucket_size if bucket_size is not None else self.inference_batch_size
-        forward_jit = self.forward_jit_by_bs[bs]
+        forward_jit = (
+            self.forward_jit_by_bs[bs]
+            if packed_seq_len is None
+            else self.forward_jit_by_bs_len[(bs, packed_seq_len)]
+        )
         params = self.state.params if self._live_swap_enabled else state.params
         with jax_profiler.TraceAnnotation(
             "forward_jit/ranking",
@@ -4162,17 +4227,46 @@ class RankingModelRunner(
         self.create_embedding_init_data()
 
         self.forward_jit_by_bs = {}
+        self.forward_jit_by_bs_len = {}
         for bs in self.sorted_buckets:
-            self.forward_jit_by_bs[bs] = self._build_and_register_forward_jit(bs, compiler_options)
+            lens: tuple[int | None, ...] = (
+                self.packed_seq_lens(bs) if self.compact_candidate_slots else (None,)
+            )
+            for n in lens:
+                jit_fn = self._build_and_register_forward_jit(
+                    bs, compiler_options, packed_seq_len=n
+                )
+                self.forward_jit_by_bs_len[(bs, n)] = jit_fn
+            self.forward_jit_by_bs[bs] = jit_fn
         self.forward_jit = self.forward_jit_by_bs[max(self.sorted_buckets)]
+        if (
+            self.seqpack_packed_len_fractions
+            and self.using_seqpack
+            and not self.compact_candidate_slots
+        ):
+            logger.warning(
+                "seqpack_packed_len_fractions=%s ignored: compact candidate slots need a "
+                "kernel that takes per-user lengths from cu_seqlens alone "
+                "(pallas_ranker_varlen_attn); the FA4 packed kernel schedules a fixed "
+                "candidate block per user. Running the fixed layout.",
+                self.seqpack_packed_len_fractions,
+            )
+        if self.compact_candidate_slots:
+            logger.info(
+                "compact candidate slots: compiled packed lengths per bucket %s",
+                {bs: self.packed_seq_lens(bs) for bs in self.sorted_buckets},
+            )
 
     def _build_and_register_forward_jit(
-        self, bs: int, compiler_options: dict[str, Any] | None
+        self,
+        bs: int,
+        compiler_options: dict[str, Any] | None,
+        packed_seq_len: int | None = None,
     ) -> JittedOrCompiled:
         assert isinstance(self.model_config, RecsysAggregatedModelConfig)
 
         if self.using_seqpack:
-            trace_batch = self.example_data(bs)
+            trace_batch = self.example_data(bs, packed_seq_len=packed_seq_len)
             _hist_post_seq = int(np.prod(trace_batch["history_seq"]["post_hashes"].shape[1:]))
             _hist_auth_seq = int(np.prod(trace_batch["history_seq"]["auth_hashes"].shape[1:]))
             _cand_post_seq = int(np.prod(trace_batch["candidate_seq"]["post_hashes"].shape[1:]))
@@ -4312,10 +4406,11 @@ class RankingModelRunner(
                 ),
                 out_shardings=(self.data_sharding, self.data_sharding, nan_sharding),
             ),
-            name=f"forward_fn_bs{bs}",
+            name=f"forward_fn_bs{bs}"
+            + (f"_len{packed_seq_len}" if packed_seq_len is not None else ""),
         )
 
-        rng, init_data = self._rng_and_init_data(bs=bs)
+        rng, init_data = self._rng_and_init_data(bs=bs, packed_seq_len=packed_seq_len)
 
         merged_embeddings_init = jnp.zeros(
             (
@@ -4918,6 +5013,7 @@ class RetrievalModelRunner(
         request: xai_recsys_engine.RetrieveRequestBatch | None = None,
         eligible_mask: jax.Array | None = None,
         bucket_size: int | None = None,
+        packed_seq_len: int | None = None,
     ) -> dict[int, tuple[jax.Array, jax.Array]]:
         if self._live_swap_enabled:
             state = self.state

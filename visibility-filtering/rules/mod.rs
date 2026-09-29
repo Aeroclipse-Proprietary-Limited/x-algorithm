@@ -12,7 +12,7 @@ mod tweet_rules;
 #[cfg(test)]
 use crate::models::{HydratedTweetCandidate, ViewerFeatures};
 #[cfg(test)]
-use crate::params::NsfwGatingCountries;
+use crate::params::CountryLists;
 use context::RuleContext;
 pub use registry::{Evaluation, RuleEngine, SafetyLevel};
 #[cfg(test)]
@@ -25,9 +25,8 @@ pub(crate) fn test_context<'a>(
 ) -> RuleContext<'a> {
     use std::sync::LazyLock;
 
-    static NSFW_GATING_COUNTRIES: LazyLock<NsfwGatingCountries> =
-        LazyLock::new(NsfwGatingCountries::starting_at_default);
-    RuleContext::new(viewer, candidate, &NSFW_GATING_COUNTRIES)
+    static COUNTRY_LISTS: LazyLock<CountryLists> = LazyLock::new(CountryLists::starting_at_default);
+    RuleContext::new(viewer, candidate, &COUNTRY_LISTS)
 }
 
 #[cfg(test)]

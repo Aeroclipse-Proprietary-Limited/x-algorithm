@@ -1,6 +1,5 @@
 use crate::hydration::fallback_cache::FallbackCache;
-use crate::hydration::tes_composite::TweetForVisibility;
-use crate::models::{AuthorId, NsfwFeature, PureCore, TweetFeatures, TweetId};
+use crate::models::{AuthorId, PureCore, TweetId};
 use xai_core_entities::entities::PureCoreData;
 
 pub(crate) type PureCoreFallbackCache = FallbackCache<u64, PureCore>;
@@ -22,23 +21,4 @@ fn direct_reply_root_author(core: &PureCoreData) -> Option<AuthorId> {
         .filter(|&replied_to| core.conversation_id == Some(replied_to))
         .and(core.in_reply_to_user_id)
         .map(AuthorId)
-}
-
-pub(crate) fn build_tweet_features(tweet: Option<&TweetForVisibility>) -> TweetFeatures {
-    match tweet {
-        Some(tweet) => TweetFeatures {
-            source_tweet_id: tweet.source_tweet_id,
-            media: tweet.media.clone(),
-            takedown_reasons: tweet.takedown_reasons.clone(),
-            nsfw: NsfwFeature {
-                user: tweet.nsfw_user,
-                admin: tweet.nsfw_admin,
-            },
-            is_nullcast: tweet.is_nullcast,
-            is_community_tweet: tweet.is_community_tweet,
-            edit_control: tweet.edit_control.clone(),
-            exclusive_conversation_author_id: tweet.exclusive_conversation_author_id,
-        },
-        None => TweetFeatures::default(),
-    }
 }

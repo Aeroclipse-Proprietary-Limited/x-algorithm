@@ -54,7 +54,6 @@ impl RequestShape {
             is_retweet: c.retweeted_tweet_id.is_some(),
             is_reply: c.in_reply_to_tweet_id.is_some(),
             is_mutual_follow_author: c.is_mutual_follow_author == Some(true),
-            author_policy_zeroed: local.author_policy_zeroed,
             cold_start_lift_to_rank: local.cold_start_lift_to_rank,
             min_video_duration_ms: c.min_video_duration_ms,
             phoenix_scores: Some(phoenix_scores_proto(&c.phoenix_scores)),

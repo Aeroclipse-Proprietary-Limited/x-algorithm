@@ -1,9 +1,8 @@
-use crate::models::MediaFeature;
+use crate::models::{MediaFeature, NsfwFeature, TweetFeatures};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thrift::protocol::{TInputProtocol, TOutputProtocol, TSerializable, TType};
-use tonic::async_trait;
 use xai_core_entities::entities::{
     EditControl, ExclusiveTweetControl, MediaEntities, MediaEntity, Share, TakedownReason,
 };
@@ -13,39 +12,15 @@ use xai_strato::{encode, MValCodec, StratoGrpc};
 const COLUMN: &str = "tweetypie/federated/tweetForVisibility.Tweet";
 const OPERATION: &str = "fetch";
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct TweetForVisibility {
-    pub(crate) author_id: u64,
-    pub(crate) source_tweet_id: Option<u64>,
-    pub(crate) is_nullcast: bool,
-    pub(crate) nsfw_user: bool,
-    pub(crate) nsfw_admin: bool,
-    pub(crate) has_takedown: bool,
-    pub(crate) takedown_reasons: Vec<TakedownReason>,
-    pub(crate) media: MediaFeature,
-    pub(crate) is_community_tweet: bool,
-    pub(crate) edit_control: Option<EditControl>,
-    pub(crate) exclusive_conversation_author_id: Option<u64>,
-}
-
-#[async_trait]
-pub(crate) trait TweetForVisibilitySource: Send + Sync {
-    async fn get_tweets_for_visibility(
-        &self,
-        tweet_ids: &[u64],
-    ) -> HashMap<u64, Result<Option<TweetForVisibility>>>;
-}
-
-pub(crate) struct ProdTweetForVisibilitySource {
+pub(crate) struct TweetSource {
     pub(crate) grpc_client: Arc<StratoGrpc>,
 }
 
-#[async_trait]
-impl TweetForVisibilitySource for ProdTweetForVisibilitySource {
-    async fn get_tweets_for_visibility(
+impl TweetSource {
+    pub(crate) async fn get_tweets(
         &self,
         tweet_ids: &[u64],
-    ) -> HashMap<u64, Result<Option<TweetForVisibility>>> {
+    ) -> HashMap<u64, Result<Option<TweetFeatures>>> {
         let calls = tweet_ids
             .iter()
             .map(|tweet_id| {
@@ -62,14 +37,14 @@ impl TweetForVisibilitySource for ProdTweetForVisibilitySource {
             .iter()
             .zip(result_batch)
             .map(|(tweet_id, bytes_result)| {
-                let item = bytes_result.and_then(|bytes| decode_tweet_for_visibility(&bytes));
+                let item = bytes_result.and_then(|bytes| decode_tweet(&bytes));
                 (*tweet_id, item)
             })
             .collect()
     }
 }
 
-pub(crate) fn decode_tweet_for_visibility(bytes: &[u8]) -> Result<Option<TweetForVisibility>> {
+pub(crate) fn decode_tweet(bytes: &[u8]) -> Result<Option<TweetFeatures>> {
     match std::panic::catch_unwind(|| strato_decode::<Tweet>(bytes))
         .map_err(|_| anyhow!("MVal decoder panicked"))?
     {
@@ -97,25 +72,35 @@ struct Tweet {
 struct CoreData {
     user_id: u64,
     share: Option<Share>,
-    has_takedown: bool,
     nsfw_user: bool,
     nsfw_admin: bool,
     nullcast: bool,
 }
 
 impl Tweet {
-    fn project(self) -> Option<TweetForVisibility> {
+    fn project(self) -> Option<TweetFeatures> {
         let core_data = self.core_data?;
-        Some(TweetForVisibility {
-            author_id: core_data.user_id,
+        let is_pasted = |entity: &MediaEntity| {
+            entity
+                .additional_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.ownership_info.as_ref())
+                .and_then(|ownership| ownership.user_id)
+                .is_some_and(|owner| owner.cast_unsigned() != core_data.user_id)
+        };
+        let has_uploaded_media =
+            self.has_media_refs && (self.media.is_empty() || !self.media.iter().all(is_pasted));
+        Some(TweetFeatures {
             source_tweet_id: core_data.share.map(|share| share.source_tweet_id),
             is_nullcast: core_data.nullcast,
-            nsfw_user: core_data.nsfw_user,
-            nsfw_admin: core_data.nsfw_admin,
-            has_takedown: core_data.has_takedown,
+            nsfw: NsfwFeature {
+                user: core_data.nsfw_user,
+                admin: core_data.nsfw_admin,
+            },
             takedown_reasons: self.takedown_reasons,
             media: MediaFeature {
                 has_media: self.has_media_refs || self.has_card_reference,
+                has_uploaded_media,
                 ..media_feature(self.media)
             },
             is_community_tweet: self.has_communities,
@@ -211,7 +196,6 @@ fn read_core_data(proto: &mut dyn TInputProtocol) -> thrift::Result<CoreData> {
         match field.id {
             Some(1) => core_data.user_id = proto.read_i64()?.cast_unsigned(),
             Some(7) => core_data.share = Some(Share::from_thrift(proto)),
-            Some(8) => core_data.has_takedown = proto.read_bool()?,
             Some(9) => core_data.nsfw_user = proto.read_bool()?,
             Some(10) => core_data.nsfw_admin = proto.read_bool()?,
             Some(11) => core_data.nullcast = proto.read_bool()?,
@@ -253,13 +237,11 @@ fn read_communities_non_empty(proto: &mut dyn TInputProtocol) -> thrift::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hydration::decode::tweet::build_tweet_features;
-    use crate::models::{NsfwFeature, TweetFeatures};
     use thrift::protocol::{
         TBinaryOutputProtocol, TFieldIdentifier, TListIdentifier, TStructIdentifier,
     };
     use xai_core_entities::entities::EditControlInitial;
-    use xai_x_thrift::media_common::MediaKey;
+    use xai_x_thrift::media_common::{MediaKey, OwnershipInfo};
     use xai_x_thrift::media_information::{AdditionalMetadata, GeoRestrictions, Restrictions};
 
     type Proto<'a> = TBinaryOutputProtocol<&'a mut Vec<u8>>;
@@ -267,6 +249,7 @@ mod tests {
 
     const TWEET_ID: i64 = 10;
     const AUTHOR_ID: i64 = 7001;
+    const PASTED_FROM_AUTHOR_ID: i64 = 7002;
     const SOURCE_TWEET_ID: i64 = 9;
     const CONVERSATION_AUTHOR_ID: i64 = 7003;
 
@@ -332,7 +315,7 @@ mod tests {
                 structure(p, 2, |p| {
                     i64_field(p, 1, AUTHOR_ID);
                     field(p, 2, TType::String, |p| {
-                        p.write_string("composite text").unwrap()
+                        p.write_string("tweet text").unwrap()
                     });
                     core_data(p);
                 });
@@ -381,8 +364,8 @@ mod tests {
         }
     }
 
-    fn assemble_fixture(bytes: &[u8]) -> TweetFeatures {
-        build_tweet_features(decode_tweet_for_visibility(bytes).unwrap().as_ref())
+    fn decode_fixture(bytes: &[u8]) -> TweetFeatures {
+        decode_tweet(bytes).unwrap().unwrap()
     }
 
     #[test]
@@ -390,7 +373,6 @@ mod tests {
         let bytes = encode_tweet(
             &mut |p| {
                 structure(p, 7, |p| i64_field(p, 1, SOURCE_TWEET_ID));
-                bool_field(p, 8, true);
                 bool_field(p, 9, true);
                 bool_field(p, 10, false);
                 bool_field(p, 11, true);
@@ -420,6 +402,7 @@ mod tests {
         );
         let media = MediaFeature {
             has_media: true,
+            has_uploaded_media: true,
             has_dmca_media: true,
             ..Default::default()
         };
@@ -430,23 +413,7 @@ mod tests {
         }));
 
         assert_eq!(
-            decode_tweet_for_visibility(&bytes).unwrap().unwrap(),
-            TweetForVisibility {
-                author_id: AUTHOR_ID as u64,
-                source_tweet_id: Some(SOURCE_TWEET_ID as u64),
-                is_nullcast: true,
-                nsfw_user: true,
-                nsfw_admin: false,
-                has_takedown: true,
-                takedown_reasons: vec![TakedownReason::Dmca],
-                media: media.clone(),
-                is_community_tweet: true,
-                edit_control: edit_control.clone(),
-                exclusive_conversation_author_id: Some(CONVERSATION_AUTHOR_ID as u64),
-            }
-        );
-        assert_eq!(
-            assemble_fixture(&bytes),
+            decode_fixture(&bytes),
             TweetFeatures {
                 source_tweet_id: Some(SOURCE_TWEET_ID as u64),
                 media,
@@ -464,10 +431,10 @@ mod tests {
     }
 
     #[test]
-    fn plain_tweet_assembles_default_features() {
+    fn plain_tweet_decodes_default_features() {
         let bytes = encode_tweet(&mut |_| {}, &mut |_| {});
 
-        assert_eq!(assemble_fixture(&bytes), TweetFeatures::default());
+        assert_eq!(decode_fixture(&bytes), TweetFeatures::default());
     }
 
     #[test]
@@ -484,9 +451,10 @@ mod tests {
         );
 
         assert_eq!(
-            assemble_fixture(&bytes).media,
+            decode_fixture(&bytes).media,
             MediaFeature {
                 has_media: true,
+                has_uploaded_media: true,
                 has_dmca_media: true,
                 geo_allow_list: vec!["us".to_string(), "gb".to_string()],
                 geo_deny_list: vec!["de".to_string(), "fr".to_string()],
@@ -495,17 +463,56 @@ mod tests {
     }
 
     #[test]
-    fn media_presence_comes_from_refs_or_card_reference_never_the_media_list() {
-        for (name, bytes, expected) in [
-            ("refs", media_fixture(true, false, &[]), true),
-            ("card", media_fixture(false, true, &[]), true),
+    fn media_presence_comes_from_refs_or_card_reference_and_uploads_exclude_pasted_media() {
+        let owned_by = |tweet_id, user_id| MediaEntity {
+            additional_metadata: Some(AdditionalMetadata {
+                ownership_info: Some(OwnershipInfo {
+                    tweet_id: Some(tweet_id),
+                    user_id: Some(user_id),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for (name, bytes, has_media, has_uploaded_media) in [
+            ("refs", media_fixture(true, false, &[]), true, true),
+            ("card", media_fixture(false, true, &[]), true, false),
             (
                 "entities only",
                 media_fixture(false, false, &[MediaEntity::default()]),
                 false,
+                false,
+            ),
+            (
+                "uploaded",
+                media_fixture(true, false, &[owned_by(TWEET_ID, AUTHOR_ID)]),
+                true,
+                true,
+            ),
+            (
+                "reused from the author's older post",
+                media_fixture(true, false, &[owned_by(SOURCE_TWEET_ID, AUTHOR_ID)]),
+                true,
+                true,
+            ),
+            (
+                "pasted",
+                media_fixture(
+                    true,
+                    false,
+                    &[owned_by(SOURCE_TWEET_ID, PASTED_FROM_AUTHOR_ID)],
+                ),
+                true,
+                false,
             ),
         ] {
-            assert_eq!(assemble_fixture(&bytes).media.has_media, expected, "{name}");
+            let media = decode_fixture(&bytes).media;
+            assert_eq!(
+                (media.has_media, media.has_uploaded_media),
+                (has_media, has_uploaded_media),
+                "{name}"
+            );
         }
     }
 
@@ -522,7 +529,7 @@ mod tests {
                 });
             });
 
-            assert_eq!(assemble_fixture(&bytes).is_community_tweet, expected);
+            assert_eq!(decode_fixture(&bytes).is_community_tweet, expected);
         }
     }
 
@@ -538,17 +545,16 @@ mod tests {
             .unwrap()
             + 4;
 
-        assert!(decode_tweet_for_visibility(&bytes[..end]).is_err());
+        assert!(decode_tweet(&bytes[..end]).is_err());
     }
 
     #[test]
-    fn missing_tweet_defaults_every_feature() {
+    fn absent_value_or_missing_core_data_decodes_as_missing() {
         for bytes in [
             encode_option(&mut |p| field(p, 9048, TType::Void, |_| {})),
             encode_option(&mut |p| structure(p, 26900, |p| i64_field(p, 1, TWEET_ID))),
         ] {
-            assert!(decode_tweet_for_visibility(&bytes).unwrap().is_none());
-            assert_eq!(assemble_fixture(&bytes), TweetFeatures::default());
+            assert!(decode_tweet(&bytes).unwrap().is_none());
         }
     }
 }

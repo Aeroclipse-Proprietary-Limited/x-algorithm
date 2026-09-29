@@ -9,7 +9,7 @@ use xai_core_entities::gizmoduck_client::QueryFields;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Source {
     TesPureCore,
-    TesComposite,
+    TesTweet,
     TesConversationControl,
     SafetyLabels,
     GizmoduckViewer,
@@ -89,10 +89,10 @@ impl Hydrator {
                 ("tes", "get_tweet_core_datas"),
             ),
             H::Tweet => node(
-                S::TesComposite,
+                S::TesTweet,
                 Part::Column,
                 K::RequestTweets,
-                ("tes", "get_tweets_for_visibility"),
+                ("tes", "get_tweets"),
             ),
             H::ConversationControl => node(
                 S::TesConversationControl,
@@ -113,6 +113,12 @@ impl Hydrator {
                     QueryFields::EXTENDED_PROFILE,
                     QueryFields::SAFETY,
                 ]),
+                K::Viewer,
+                ("gizmoduck", "get_viewer_data"),
+            ),
+            H::ViewerLabels => node(
+                S::GizmoduckViewer,
+                Part::Fields(&[QueryFields::LABELS]),
                 K::Viewer,
                 ("gizmoduck", "get_viewer_data"),
             ),
@@ -347,12 +353,18 @@ impl Group {
         (self.clients.join("+"), self.methods.join("+"))
     }
 
-        pub(super) fn fields(&self) -> Vec<QueryFields> {
+            pub(super) fn fields(&self) -> Vec<QueryFields> {
+        let nodes = match self.source {
+            Source::GizmoduckAuthor => Hydrator::VARIANTS
+                .iter()
+                .copied()
+                .filter(|node| node.spec().source == self.source)
+                .fold(Hydrators::empty(), Hydrators::with),
+            _ => self.nodes,
+        };
         let mut fields = Vec::new();
-        for node in Hydrator::VARIANTS {
-            if let (true, Part::Fields(node_fields)) =
-                (node.spec().source == self.source, node.spec().part)
-            {
+        for node in nodes.iter() {
+            if let Part::Fields(node_fields) = node.spec().part {
                 for field in node_fields {
                     if !fields.contains(field) {
                         fields.push(*field);
@@ -459,7 +471,7 @@ filter_all: 1 calls
 tes/get_tweet_core_datas after: - nodes: pure_core
 timeline_home: 7 calls
 tes/get_tweet_core_datas after: - nodes: pure_core
-tes/get_tweets_for_visibility after: - nodes: tweet
+tes/get_tweets after: - nodes: tweet
 safety_labels/get after: - nodes: tweet_safety_labels
 gizmoduck/get_viewer_data after: - nodes: viewer_profile fields: ACCOUNT|EXTENDED_PROFILE|SAFETY (skipped logged out)
 gizmoduck/get_users after: pure_core nodes: author_safety fields: SAFETY|LABELS
@@ -467,7 +479,7 @@ socialgraph/batch_check_relationships after: pure_core nodes: follows,blocks,mut
 exclusive_content/batch_check_super_follows after: tweet nodes: super_follows_exclusive super_follows-fwd[exclusive_author] (skipped logged out)
 timeline_home_recommendations: 7 calls
 tes/get_tweet_core_datas after: - nodes: pure_core
-tes/get_tweets_for_visibility after: - nodes: tweet
+tes/get_tweets after: - nodes: tweet
 safety_labels/get after: - nodes: tweet_safety_labels
 gizmoduck/get_viewer_data after: - nodes: viewer_profile fields: ACCOUNT|EXTENDED_PROFILE|SAFETY (skipped logged out)
 gizmoduck/get_users after: pure_core nodes: author_safety,author_labels fields: SAFETY|LABELS
@@ -475,19 +487,19 @@ socialgraph/batch_check_relationships after: pure_core nodes: follows,blocks,mut
 exclusive_content/batch_check_super_follows after: tweet nodes: super_follows_exclusive super_follows-fwd[exclusive_author] (skipped logged out)
 timeline_home_hydration: 11 calls
 tes/get_tweet_core_datas after: - nodes: pure_core
-tes/get_tweets_for_visibility after: - nodes: tweet
+tes/get_tweets after: - nodes: tweet
 conversation_control/get_conversation_controls after: - nodes: conversation_control
 safety_labels/get after: - nodes: tweet_safety_labels
-gizmoduck/get_viewer_data after: - nodes: viewer_profile fields: ACCOUNT|EXTENDED_PROFILE|SAFETY (skipped logged out)
+gizmoduck/get_viewer_data after: - nodes: viewer_profile,viewer_labels fields: ACCOUNT|EXTENDED_PROFILE|SAFETY|LABELS (skipped logged out)
 gizmoduck/get_users after: pure_core nodes: author_safety fields: SAFETY|LABELS
-blocked_by/batch_check_blocked_by after: pure_core nodes: blocked_by_author,blocked_by_reply_root blocks-rev[author,reply_root] (skipped logged out)
+socialgraph+blocked_by/batch_check_relationships+batch_check_blocked_by after: pure_core nodes: follows,blocked_by_author,blocked_by_reply_root follows-fwd[author] blocks-rev[author,reply_root] (skipped logged out)
 exclusive_content/batch_check_super_follows after: tweet nodes: super_follows_exclusive super_follows-fwd[exclusive_author] (skipped logged out)
 conversation_control/batch_check_followed_by+batch_check_super_follows after: conversation_control nodes: root_follows_viewer,super_follows_root follows-rev[root:Community|MyNetwork] super_follows-fwd[root:Subscribers] (skipped logged out)
 conversation_control/exists_intersect after: root_follows_viewer nodes: root_follows_viewer_second_degree (skipped logged out)
 conversation_control/tfe_top_country after: conversation_control nodes: viewer_country (skipped logged out)
 immersive_expanded_recommendations: 7 calls
 tes/get_tweet_core_datas after: - nodes: pure_core
-tes/get_tweets_for_visibility after: - nodes: tweet
+tes/get_tweets after: - nodes: tweet
 safety_labels/get after: - nodes: tweet_safety_labels
 gizmoduck/get_viewer_data after: - nodes: viewer_profile fields: ACCOUNT|EXTENDED_PROFILE|SAFETY (skipped logged out)
 gizmoduck/get_users after: pure_core nodes: author_safety,author_labels fields: SAFETY|LABELS

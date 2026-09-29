@@ -2,7 +2,7 @@ use super::builders::author_candidate;
 use super::{Role, Row};
 use crate::models::{AuthorFeatures, SafetyLabelType};
 use crate::rules::fixtures::{allow, candidate, dropped};
-use crate::rules::SafetyLevel::TimelineHome;
+use crate::rules::SafetyLevel::{TimelineHome, TimelineHomeHydration};
 use xai_visibility_filtering::models::FilteredReason;
 
 pub(super) fn rows() -> Vec<Row> {
@@ -14,14 +14,20 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHome,
                     Role::NonFollower,
-                    dropped(FilteredReason::AuthorIsSuspended, "SuspendedAuthorRule"),
+                    dropped(FilteredReason::AuthorIsSuspended, "suspended_author/drop"),
                 ),
                 (
                     TimelineHome,
                     Role::Follower,
-                    dropped(FilteredReason::AuthorIsSuspended, "SuspendedAuthorRule"),
+                    dropped(FilteredReason::AuthorIsSuspended, "suspended_author/drop"),
                 ),
                 (TimelineHome, Role::Author, allow()),
+                (
+                    TimelineHomeHydration,
+                    Role::Follower,
+                    dropped(FilteredReason::AuthorIsSuspended, "suspended_author/drop"),
+                ),
+                (TimelineHomeHydration, Role::Author, allow()),
             ],
         },
         Row {
@@ -34,10 +40,32 @@ pub(super) fn rows() -> Vec<Row> {
                 .with_label(SafetyLabelType::NSFW_HIGH_PRECISION)
                 .with_media()
                 .build(),
+            expect: vec![
+                (
+                    TimelineHome,
+                    Role::NonFollower,
+                    dropped(FilteredReason::AuthorIsSuspended, "suspended_author/drop"),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::NonFollower,
+                    dropped(FilteredReason::AuthorIsSuspended, "suspended_author/drop"),
+                ),
+            ],
+        },
+        Row {
+            name: "suspended_author_bounced_post",
+            post: candidate()
+                .with_author_features(AuthorFeatures {
+                    is_suspended: true,
+                    ..Default::default()
+                })
+                .with_label(SafetyLabelType::BOUNCE)
+                .build(),
             expect: vec![(
-                TimelineHome,
+                TimelineHomeHydration,
                 Role::NonFollower,
-                dropped(FilteredReason::AuthorIsSuspended, "SuspendedAuthorRule"),
+                dropped(FilteredReason::AuthorIsSuspended, "suspended_author/drop"),
             )],
         },
         Row {
@@ -47,14 +75,50 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHome,
                     Role::NonFollower,
-                    dropped(FilteredReason::AuthorIsDeactivated, "DeactivatedAuthorRule"),
+                    dropped(
+                        FilteredReason::AuthorIsDeactivated,
+                        "deactivated_author/drop",
+                    ),
                 ),
                 (
                     TimelineHome,
                     Role::Follower,
-                    dropped(FilteredReason::AuthorIsDeactivated, "DeactivatedAuthorRule"),
+                    dropped(
+                        FilteredReason::AuthorIsDeactivated,
+                        "deactivated_author/drop",
+                    ),
                 ),
                 (TimelineHome, Role::Author, allow()),
+                (
+                    TimelineHomeHydration,
+                    Role::Follower,
+                    dropped(
+                        FilteredReason::AuthorIsDeactivated,
+                        "deactivated_author/drop",
+                    ),
+                ),
+            ],
+        },
+        Row {
+            name: "suspended_and_deactivated_author",
+            post: author_candidate(|a| {
+                a.is_suspended = true;
+                a.is_deactivated = true;
+            }),
+            expect: vec![
+                (
+                    TimelineHome,
+                    Role::NonFollower,
+                    dropped(FilteredReason::AuthorIsSuspended, "suspended_author/drop"),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::NonFollower,
+                    dropped(
+                        FilteredReason::AuthorIsDeactivated,
+                        "deactivated_author/drop",
+                    ),
+                ),
             ],
         },
         Row {
@@ -64,14 +128,28 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHome,
                     Role::NonFollower,
-                    dropped(FilteredReason::AuthorAccountIsInactive, "ErasedAuthorRule"),
+                    dropped(
+                        FilteredReason::AuthorAccountIsInactive,
+                        "erased_author/drop/inactive",
+                    ),
                 ),
                 (
                     TimelineHome,
                     Role::Follower,
-                    dropped(FilteredReason::AuthorAccountIsInactive, "ErasedAuthorRule"),
+                    dropped(
+                        FilteredReason::AuthorAccountIsInactive,
+                        "erased_author/drop/inactive",
+                    ),
                 ),
                 (TimelineHome, Role::Author, allow()),
+                (
+                    TimelineHomeHydration,
+                    Role::Follower,
+                    dropped(
+                        FilteredReason::AuthorAccountIsInactive,
+                        "erased_author/drop/inactive",
+                    ),
+                ),
             ],
         },
         Row {
@@ -83,7 +161,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::AuthorAccountIsInactive,
-                        "OffboardedAuthorRule",
+                        "offboarded_author/drop/inactive",
                     ),
                 ),
                 (
@@ -91,10 +169,18 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::AuthorAccountIsInactive,
-                        "OffboardedAuthorRule",
+                        "offboarded_author/drop/inactive",
                     ),
                 ),
                 (TimelineHome, Role::Author, allow()),
+                (
+                    TimelineHomeHydration,
+                    Role::Follower,
+                    dropped(
+                        FilteredReason::AuthorAccountIsInactive,
+                        "offboarded_author/drop/inactive",
+                    ),
+                ),
             ],
         },
         Row {
@@ -104,14 +190,26 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHome,
                     Role::NonFollower,
-                    dropped(FilteredReason::AuthorIsProtected, "ProtectedAuthorDropRule"),
+                    dropped(FilteredReason::AuthorIsProtected, "protected_author/drop"),
                 ),
                 (TimelineHome, Role::Follower, allow()),
                 (TimelineHome, Role::Author, allow()),
                 (
                     TimelineHome,
                     Role::LoggedOut,
-                    dropped(FilteredReason::AuthorIsProtected, "ProtectedAuthorDropRule"),
+                    dropped(FilteredReason::AuthorIsProtected, "protected_author/drop"),
+                ),
+                (
+                    TimelineHomeHydration,
+                    Role::NonFollower,
+                    dropped(FilteredReason::AuthorIsProtected, "protected_author/drop"),
+                ),
+                (TimelineHomeHydration, Role::Follower, allow()),
+                (TimelineHomeHydration, Role::Author, allow()),
+                (
+                    TimelineHomeHydration,
+                    Role::LoggedOut,
+                    dropped(FilteredReason::AuthorIsProtected, "protected_author/drop"),
                 ),
             ],
         },

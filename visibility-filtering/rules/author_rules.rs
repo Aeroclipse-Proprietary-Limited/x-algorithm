@@ -1,226 +1,191 @@
 use crate::models::AuthorLabel;
 use crate::rules::rule_spec::{
-    ActionSpec, Audience, AuthorPredicate, Condition, Predicate, RelationshipPredicate, RuleClause,
-    TweetPredicate, ViewerPredicate,
+    drop_post, everyone, except_author, rule, AuthorPredicate, Condition, Predicate,
+    RelationshipPredicate, RuleClause, RuleId, TweetPredicate, ViewerPredicate,
 };
 use xai_visibility_filtering::models::FilteredReason;
-
-const fn author_drop(
-    rule_name: &'static str,
-    when: &'static [Condition],
-    reason: FilteredReason,
-    applies_to: Audience,
-) -> RuleClause {
-    RuleClause {
-        rule_name,
-        when,
-        applies_to,
-        action: ActionSpec::Drop(reason),
-    }
-}
 
 const NOT_FOLLOWER: Condition = Condition::Not(Predicate::Relationship(
     RelationshipPredicate::ViewerFollowsAuthor,
 ));
 
-pub(super) const AUTHOR_STATE_DROPS: &[RuleClause] = &[
+const fn author(leaf: AuthorPredicate) -> Condition {
+    Condition::Holds(Predicate::Author(leaf))
+}
+
+const fn relationship(leaf: RelationshipPredicate) -> Condition {
+    Condition::Holds(Predicate::Relationship(leaf))
+}
+
+fn author_drop(id: RuleId, state: AuthorPredicate, reason: FilteredReason) -> Vec<RuleClause> {
+    rule(id, except_author([author(state)], drop_post(reason)))
+}
+
+fn suspended_author() -> Vec<RuleClause> {
     author_drop(
-        "SuspendedAuthorRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::IsSuspended,
-        ))],
+        RuleId::SuspendedAuthor,
+        AuthorPredicate::IsSuspended,
         FilteredReason::AuthorIsSuspended,
-        Audience::ExceptAuthor,
-    ),
+    )
+}
+
+fn deactivated_author() -> Vec<RuleClause> {
     author_drop(
-        "DeactivatedAuthorRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::IsDeactivated,
-        ))],
+        RuleId::DeactivatedAuthor,
+        AuthorPredicate::IsDeactivated,
         FilteredReason::AuthorIsDeactivated,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "ErasedAuthorRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::IsErased,
-        ))],
-        FilteredReason::AuthorAccountIsInactive,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "OffboardedAuthorRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::IsOffboarded,
-        ))],
-        FilteredReason::AuthorAccountIsInactive,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "ProtectedAuthorDropRule",
-        &[
-            Condition::Holds(Predicate::Author(AuthorPredicate::IsProtected)),
-            NOT_FOLLOWER,
-        ],
-        FilteredReason::AuthorIsProtected,
-        Audience::ExceptAuthor,
-    ),
-];
+    )
+}
 
-pub(super) const OON_NSFW_AUTHOR_DROPS: &[RuleClause] = &[
+fn erased_author() -> Vec<RuleClause> {
     author_drop(
-        "DropNsfwUserAuthorRule",
-        &[Condition::Holds(Predicate::Author(
+        RuleId::ErasedAuthor,
+        AuthorPredicate::IsErased,
+        FilteredReason::AuthorAccountIsInactive,
+    )
+}
+
+fn offboarded_author() -> Vec<RuleClause> {
+    author_drop(
+        RuleId::OffboardedAuthor,
+        AuthorPredicate::IsOffboarded,
+        FilteredReason::AuthorAccountIsInactive,
+    )
+}
+
+fn protected_author() -> Vec<RuleClause> {
+    rule(
+        RuleId::ProtectedAuthor,
+        except_author(
+            [author(AuthorPredicate::IsProtected), NOT_FOLLOWER],
+            drop_post(FilteredReason::AuthorIsProtected),
+        ),
+    )
+}
+
+pub(super) fn author_state_drops() -> Vec<RuleClause> {
+    [
+        suspended_author(),
+        deactivated_author(),
+        erased_author(),
+        offboarded_author(),
+        protected_author(),
+    ]
+    .concat()
+}
+
+pub(super) fn home_hydration_author_state_drops() -> Vec<RuleClause> {
+    [
+        erased_author(),
+        deactivated_author(),
+        suspended_author(),
+        offboarded_author(),
+        protected_author(),
+    ]
+    .concat()
+}
+
+pub(super) fn oon_nsfw_author_drops() -> Vec<RuleClause> {
+    [
+        author_drop(
+            RuleId::NsfwUserAuthor,
             AuthorPredicate::IsNsfwUser,
-        ))],
-        FilteredReason::ContainNsfwMedia,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "DropNsfwAdminAuthorRule",
-        &[Condition::Holds(Predicate::Author(
+            FilteredReason::ContainNsfwMedia,
+        ),
+        author_drop(
+            RuleId::NsfwAdminAuthor,
             AuthorPredicate::IsNsfwAdmin,
-        ))],
-        FilteredReason::ContainNsfwMedia,
-        Audience::ExceptAuthor,
-    ),
-];
+            FilteredReason::ContainNsfwMedia,
+        ),
+    ]
+    .concat()
+}
 
-pub(super) const OON_NSFW_USER_LABEL_DROPS: &[RuleClause] = &[
+fn user_label_drop(id: RuleId, label: AuthorLabel) -> Vec<RuleClause> {
     author_drop(
-        "NsfwHighRecallUserLabelRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::NsfwHighRecall),
-        ))],
+        id,
+        AuthorPredicate::HasUserLabel(label),
         FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "NsfwHighPrecisionUserLabelRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::NsfwHighPrecision),
-        ))],
-        FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "NsfwAvatarImageRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::NsfwAvatarImage),
-        ))],
-        FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "NsfwBannerImageRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::NsfwBannerImage),
-        ))],
-        FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "NsfwNearPerfectAuthorRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::NsfwNearPerfect),
-        ))],
-        FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-];
+    )
+}
 
-pub(super) const OON_USER_LABEL_DROPS: &[RuleClause] = &[
-    author_drop(
-        "SpamHighRecallUserLabelRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::SpamHighRecall),
-        ))],
-        FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "CompromisedUserLabelRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::Compromised),
-        ))],
-        FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "ReadOnlyUserLabelRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::ReadOnly),
-        ))],
-        FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "ImpersonationHighPrecisionUserLabelRule",
-        &[Condition::Holds(Predicate::Author(
-            AuthorPredicate::HasUserLabel(AuthorLabel::ImpersonationHighPrecision),
-        ))],
-        FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "AbusiveHighRecallRule",
-        &[
-            Condition::Holds(Predicate::Author(AuthorPredicate::HasUserLabel(
-                AuthorLabel::AbusiveHighRecall,
-            ))),
-            NOT_FOLLOWER,
-        ],
-        FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-    author_drop(
-        "DoNotAmplifyNonFollowerRule",
-        &[
-            Condition::Holds(Predicate::Author(AuthorPredicate::HasUserLabel(
-                AuthorLabel::DoNotAmplify,
-            ))),
-            NOT_FOLLOWER,
-        ],
-        FilteredReason::UnspecifiedReason,
-        Audience::ExceptAuthor,
-    ),
-];
+fn non_follower_user_label_drop(id: RuleId, label: AuthorLabel) -> Vec<RuleClause> {
+    rule(
+        id,
+        except_author(
+            [author(AuthorPredicate::HasUserLabel(label)), NOT_FOLLOWER],
+            drop_post(FilteredReason::UnspecifiedReason),
+        ),
+    )
+}
 
-const LOGGED_IN: Condition = Condition::Not(Predicate::Viewer(ViewerPredicate::LoggedOut));
+pub(super) fn oon_nsfw_user_label_drops() -> Vec<RuleClause> {
+    use AuthorLabel::{
+        NsfwAvatarImage, NsfwBannerImage, NsfwHighPrecision, NsfwHighRecall, NsfwNearPerfect,
+    };
+    [
+        user_label_drop(RuleId::NsfwHighRecallUserLabel, NsfwHighRecall),
+        user_label_drop(RuleId::NsfwHighPrecisionUserLabel, NsfwHighPrecision),
+        user_label_drop(RuleId::NsfwAvatarImageUserLabel, NsfwAvatarImage),
+        user_label_drop(RuleId::NsfwBannerImageUserLabel, NsfwBannerImage),
+        user_label_drop(RuleId::NsfwNearPerfectUserLabel, NsfwNearPerfect),
+    ]
+    .concat()
+}
 
-pub(super) const SOCIALGRAPH_DROPS: &[RuleClause] = &[
-    RuleClause {
-        rule_name: "ViewerBlocksAuthorRule",
-        when: &[
-            LOGGED_IN,
-            Condition::Holds(Predicate::Relationship(
-                RelationshipPredicate::ViewerBlocksAuthor,
-            )),
-        ],
-        applies_to: Audience::Everyone,
-        action: ActionSpec::Drop(FilteredReason::ViewerBlocksAuthor),
-    },
-    RuleClause {
-        rule_name: "ViewerMutesAuthorRule",
-        when: &[
-            LOGGED_IN,
-            Condition::Holds(Predicate::Relationship(
-                RelationshipPredicate::ViewerMutesAuthor,
-            )),
-        ],
-        applies_to: Audience::Everyone,
-        action: ActionSpec::Drop(FilteredReason::ViewerMutesAuthor),
-    },
-    RuleClause {
-        rule_name: "MutedRetweetsRule",
-        when: &[
-            LOGGED_IN,
-            Condition::Holds(Predicate::Tweet(TweetPredicate::IsRetweet)),
-            Condition::Holds(Predicate::Relationship(
-                RelationshipPredicate::ViewerMutesRetweetsFromAuthor,
-            )),
-        ],
-        applies_to: Audience::Everyone,
-        action: ActionSpec::Drop(FilteredReason::UnspecifiedReason),
-    },
-];
+pub(super) fn oon_user_label_drops() -> Vec<RuleClause> {
+    use AuthorLabel::{
+        AbusiveHighRecall, Compromised, DoNotAmplify, ImpersonationHighPrecision, ReadOnly,
+        SpamHighRecall,
+    };
+    [
+        user_label_drop(RuleId::SpamHighRecallUserLabel, SpamHighRecall),
+        user_label_drop(RuleId::CompromisedUserLabel, Compromised),
+        user_label_drop(RuleId::ReadOnlyUserLabel, ReadOnly),
+        user_label_drop(
+            RuleId::ImpersonationHighPrecisionUserLabel,
+            ImpersonationHighPrecision,
+        ),
+        non_follower_user_label_drop(RuleId::AbusiveHighRecallUserLabel, AbusiveHighRecall),
+        non_follower_user_label_drop(RuleId::DoNotAmplifyUserLabel, DoNotAmplify),
+    ]
+    .concat()
+}
+
+pub(super) fn socialgraph_drops() -> Vec<RuleClause> {
+    const NOT_LOGGED_OUT: Condition = Condition::Not(Predicate::Viewer(ViewerPredicate::LoggedOut));
+    [
+        rule(
+            RuleId::ViewerBlocksAuthor,
+            everyone(
+                [
+                    NOT_LOGGED_OUT,
+                    relationship(RelationshipPredicate::ViewerBlocksAuthor),
+                ],
+                drop_post(FilteredReason::ViewerBlocksAuthor),
+            ),
+        ),
+        rule(
+            RuleId::ViewerMutesAuthor,
+            everyone(
+                [
+                    NOT_LOGGED_OUT,
+                    relationship(RelationshipPredicate::ViewerMutesAuthor),
+                ],
+                drop_post(FilteredReason::ViewerMutesAuthor),
+            ),
+        ),
+        rule(
+            RuleId::ViewerMutesRetweets,
+            everyone(
+                [
+                    NOT_LOGGED_OUT,
+                    Condition::Holds(Predicate::Tweet(TweetPredicate::IsRetweet)),
+                    relationship(RelationshipPredicate::ViewerMutesRetweetsFromAuthor),
+                ],
+                drop_post(FilteredReason::UnspecifiedReason),
+            ),
+        ),
+    ]
+    .concat()
+}

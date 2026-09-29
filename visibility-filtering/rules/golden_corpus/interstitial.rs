@@ -1,12 +1,14 @@
 use super::builders::{labeled, no_stated_age_viewer, tweet_candidate, viewer_with_age};
 use super::{Role, Row};
-use crate::models::{AuthorFeatures, SafetyLabelType, ViewerAge};
-use crate::rules::fixtures::{allow, blurred, candidate, dropped, sensitive_opt_in_viewer};
+use crate::models::{AuthorFeatures, NsfwViewerDropReason, SafetyLabelType, ViewerAge};
+use crate::rules::fixtures::{
+    allow, blurred, candidate, dropped, nsfw_viewer_dropped, sensitive_opt_in_viewer,
+};
 use crate::rules::SafetyLevel::{TimelineHome, TimelineHomeRecommendations};
 use xai_visibility_filtering::models::FilteredReason;
 use xai_x_thrift::action::InterstitialReason;
 
-const AT_CUTOFF: u64 = (1705536000000 - 1288834974657) << 22;
+pub(super) const AT_CUTOFF: u64 = (1705536000000 - 1288834974657) << 22;
 
 pub(super) fn rows() -> Vec<Row> {
     vec![
@@ -21,7 +23,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::NonFollower,
                 blurred(
                     InterstitialReason::Sensitive(true),
-                    "NsfwHighPrecisionInterstitialRule",
+                    "nsfw_high_precision/blur/sensitive",
                 ),
             )],
         },
@@ -40,7 +42,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::NonFollower,
                 blurred(
                     InterstitialReason::Sensitive(true),
-                    "NsfwAdminInterstitialRule",
+                    "nsfw_admin/blur/sensitive",
                 ),
             )],
         },
@@ -55,7 +57,7 @@ pub(super) fn rows() -> Vec<Row> {
                 Role::NonFollower,
                 blurred(
                     InterstitialReason::Violence(true),
-                    "GoreAndViolenceInterstitialRule",
+                    "gore_and_violence_high_precision/blur",
                 ),
             )],
         },
@@ -71,7 +73,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     blurred(
                         InterstitialReason::Nudity(true),
-                        "NsfwHighPrecisionAdultInterstitialRule",
+                        "nsfw_high_precision/blur/nudity",
                     ),
                 ),
                 (
@@ -97,7 +99,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::As("sensitive_opt_in", sensitive_opt_in_viewer()),
                     dropped(
                         FilteredReason::ContainNsfwMedia,
-                        "NsfwHighPrecisionOonDropRule",
+                        "nsfw_high_precision/drop/nsfw_media",
                     ),
                 ),
                 (
@@ -105,7 +107,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::As("underage", viewer_with_age(ViewerAge::Known(17))),
                     blurred(
                         InterstitialReason::Sensitive(true),
-                        "NsfwHighPrecisionInterstitialRule",
+                        "nsfw_high_precision/blur/sensitive",
                     ),
                 ),
                 (
@@ -113,7 +115,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::LoggedOut,
                     blurred(
                         InterstitialReason::Sensitive(true),
-                        "NsfwHighPrecisionInterstitialRule",
+                        "nsfw_high_precision/blur/sensitive",
                     ),
                 ),
                 (
@@ -121,7 +123,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::ContainNsfwMedia,
-                        "NsfwHighPrecisionOonDropRule",
+                        "nsfw_high_precision/drop/nsfw_media",
                     ),
                 ),
                 (
@@ -129,7 +131,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::ContainNsfwMedia,
-                        "NsfwHighPrecisionOonDropRule",
+                        "nsfw_high_precision/drop/nsfw_media",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -144,7 +146,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     blurred(
                         InterstitialReason::Violence(true),
-                        "GoreAndViolenceInterstitialRule",
+                        "gore_and_violence_high_precision/blur",
                     ),
                 ),
                 (
@@ -158,7 +160,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::ContainNsfwMedia,
-                        "GoreAndViolenceOonDropRule",
+                        "gore_and_violence_high_precision/drop/nsfw_media",
                     ),
                 ),
                 (
@@ -166,7 +168,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::ContainNsfwMedia,
-                        "GoreAndViolenceOonDropRule",
+                        "gore_and_violence_high_precision/drop/nsfw_media",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -181,7 +183,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     blurred(
                         InterstitialReason::Sensitive(true),
-                        "NsfwCardImageInterstitialRule",
+                        "nsfw_card_image/blur/sensitive",
                     ),
                 ),
                 (
@@ -193,28 +195,34 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHome,
                     Role::LoggedOut,
-                    dropped(
-                        FilteredReason::ContainNsfwMedia,
-                        "SensitiveViewerLoggedOutDropRule",
+                    nsfw_viewer_dropped(
+                        NsfwViewerDropReason::LoggedOut,
+                        "sensitive_viewer_logged_out/drop",
                     ),
                 ),
                 (
                     TimelineHome,
                     Role::As("no_stated_age_in_gb", no_stated_age_viewer("gb")),
-                    dropped(
-                        FilteredReason::ContainNsfwMedia,
-                        "SensitiveViewerNoStatedAgeDropRule",
+                    nsfw_viewer_dropped(
+                        NsfwViewerDropReason::HasNoStatedAge,
+                        "sensitive_viewer_no_stated_age/drop",
                     ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::ContainNsfwMedia, "NsfwCardImageOonDropRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_card_image/drop/nsfw_media",
+                    ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::Follower,
-                    dropped(FilteredReason::ContainNsfwMedia, "NsfwCardImageOonDropRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_card_image/drop/nsfw_media",
+                    ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
             ],
@@ -234,15 +242,15 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     blurred(
                         InterstitialReason::Sensitive(true),
-                        "NsfwAdminInterstitialRule",
+                        "nsfw_admin/blur/sensitive",
                     ),
                 ),
                 (
                     TimelineHome,
                     Role::As("underage", viewer_with_age(ViewerAge::Known(17))),
-                    dropped(
-                        FilteredReason::ContainNsfwMedia,
-                        "SensitiveViewerUnderageDropRule",
+                    nsfw_viewer_dropped(
+                        NsfwViewerDropReason::IsUnderage,
+                        "sensitive_viewer_underage/drop",
                     ),
                 ),
             ],
@@ -262,21 +270,24 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     blurred(
                         InterstitialReason::SensitiveUser(true),
-                        "NsfwUserInterstitialRule",
+                        "nsfw_user/blur/sensitive_user",
                     ),
                 ),
                 (
                     TimelineHome,
                     Role::LoggedOut,
-                    dropped(
-                        FilteredReason::ContainNsfwMedia,
-                        "SensitiveViewerLoggedOutDropRule",
+                    nsfw_viewer_dropped(
+                        NsfwViewerDropReason::LoggedOut,
+                        "sensitive_viewer_logged_out/drop",
                     ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::ContainNsfwMedia, "DropNsfwUserAuthorRule"),
+                    dropped(
+                        FilteredReason::ContainNsfwMedia,
+                        "nsfw_user_author/drop/nsfw_media",
+                    ),
                 ),
             ],
         },
@@ -292,15 +303,15 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     blurred(
                         InterstitialReason::Sensitive(true),
-                        "NsfwAdminInterstitialRule",
+                        "nsfw_admin/blur/sensitive",
                     ),
                 ),
                 (
                     TimelineHome,
                     Role::LoggedOut,
-                    dropped(
-                        FilteredReason::ContainNsfwMedia,
-                        "SensitiveViewerLoggedOutDropRule",
+                    nsfw_viewer_dropped(
+                        NsfwViewerDropReason::LoggedOut,
+                        "sensitive_viewer_logged_out/drop",
                     ),
                 ),
             ],
@@ -317,15 +328,15 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     blurred(
                         InterstitialReason::SensitiveUser(true),
-                        "NsfwUserInterstitialRule",
+                        "nsfw_user/blur/sensitive_user",
                     ),
                 ),
                 (
                     TimelineHome,
                     Role::As("no_stated_age_in_gb", no_stated_age_viewer("gb")),
-                    dropped(
-                        FilteredReason::ContainNsfwMedia,
-                        "SensitiveViewerNoStatedAgeDropRule",
+                    nsfw_viewer_dropped(
+                        NsfwViewerDropReason::HasNoStatedAge,
+                        "sensitive_viewer_no_stated_age/drop",
                     ),
                 ),
             ],

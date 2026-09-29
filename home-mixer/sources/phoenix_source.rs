@@ -2,15 +2,18 @@ use crate::models::candidate::PostCandidate;
 use crate::models::query::ScoredPostsQuery;
 use crate::params::{
     EnablePhoenixRetrievalFallback, EnablePhoenixSource, PhoenixColdStartMaxResults,
-    PhoenixMaxResults, PhoenixRetrievalInferenceClusterId, PhoenixRetrievalNewUserHistoryThreshold,
-    PhoenixRetrievalNewUserInferenceClusterId, PhoenixXdsRetrievalMaxRetries,
+    PhoenixMaxResults, PhoenixRetrievalExcludeSeenPosts, PhoenixRetrievalInferenceClusterId,
+    PhoenixRetrievalNewUserHistoryThreshold, PhoenixRetrievalNewUserInferenceClusterId,
+    PhoenixXdsRetrievalMaxRetries,
 };
 use crate::util::egress::RetrievalDispatch;
 use crate::util::phoenix_request::{
     build_client_context, build_user_context, candidates_from_retrieval_response,
 };
 use tonic::async_trait;
-use xai_candidate_pipeline::component_library::clients::phoenix_retrieval_client::PhoenixRetrievalCluster;
+use xai_candidate_pipeline::component_library::clients::phoenix_retrieval_client::{
+    PhoenixRetrievalCluster, RetrievalExclusions,
+};
 use xai_candidate_pipeline::component_library::utils::quality_factor;
 use xai_candidate_pipeline::source::Source;
 use xai_home_mixer_proto as pb;
@@ -58,6 +61,36 @@ impl PhoenixSource {
 
         configured_cluster
     }
+
+    pub(crate) fn seen_post_exclusions(query: &ScoredPostsQuery) -> RetrievalExclusions {
+        if !query.params.get(PhoenixRetrievalExcludeSeenPosts) {
+            return RetrievalExclusions::default();
+        }
+        let mut post_ids: Vec<u64> = query
+            .seen_ids
+            .iter()
+            .chain(query.served_ids.iter())
+            .copied()
+            .collect();
+        if query.bloom_filter_entries.is_empty() {
+            post_ids.extend(query.impressed_post_ids.iter().copied());
+        }
+        post_ids.sort_unstable();
+        post_ids.dedup();
+        let bloom_filters = query
+            .bloom_filter_entries
+            .iter()
+            .map(|e| xai_recsys_proto::ExcludedPostsBloomFilter {
+                bit_array: e.bloom_filter.clone(),
+                size_cap: e.size_cap,
+                false_positive_rate: e.false_positive_rate,
+            })
+            .collect();
+        RetrievalExclusions {
+            post_ids,
+            bloom_filters,
+        }
+    }
 }
 
 #[async_trait]
@@ -83,7 +116,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
 
         let response = self
             .dispatch
-            .retrieve_with_fallback(
+            .retrieve_with_fallback_excluding(
                 query,
                 cluster,
                 user_id,
@@ -98,6 +131,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for PhoenixSource {
                 query.params.get(PhoenixXdsRetrievalMaxRetries),
                 query.params.get(EnablePhoenixRetrievalFallback),
                 vec![],
+                Self::seen_post_exclusions(query),
             )
             .await
             .map_err(|e| format!("PhoenixSource: {e}"))?;

@@ -148,8 +148,8 @@ mod tests {
 
     #[test]
     fn decodes_only_the_weighted_top_country() {
-        let full = decode_row(&[(3, "FR"), (2, "br"), (4, "DE")]);
-        assert_eq!(full.weighted_top_country.as_deref(), Some("br"));
+        let full = decode_row(&[(3, "FR"), (2, "nz"), (4, "DE")]);
+        assert_eq!(full.weighted_top_country.as_deref(), Some("nz"));
         assert_eq!(decode_row(&[(3, "FR")]), UserTfeTopCountry::default());
     }
 }

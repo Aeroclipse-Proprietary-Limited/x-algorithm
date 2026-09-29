@@ -1,10 +1,13 @@
 mod age_gating;
+mod age_verification;
 mod author_state;
 mod baseline;
 mod builders;
 mod conversation_control;
 mod exclusive_content;
 mod interstitial;
+mod legacy_interstitial;
+mod local_regulations;
 mod oon_media;
 mod oon_tweet_label;
 mod oon_user_label;
@@ -124,6 +127,42 @@ fn golden_corpus_pins_policy_verdicts() {
 }
 
 #[test]
+#[ignore]
+fn bench_corpus_evaluation() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    const ROUNDS: u32 = 2_000;
+    let rule_engine = RuleEngine::for_tests();
+    let cases = corpus();
+    let home_hydration: Vec<&CorpusCase> = cases
+        .iter()
+        .filter(|case| case.level == TimelineHomeHydration)
+        .collect();
+    for (label, cases) in [
+        ("all", cases.iter().collect::<Vec<_>>()),
+        ("home_hydration", home_hydration),
+    ] {
+        let start = Instant::now();
+        for _ in 0..ROUNDS {
+            for case in &cases {
+                black_box(rule_engine.evaluate(
+                    case.level,
+                    black_box(&case.viewer),
+                    black_box(&case.candidate),
+                ));
+            }
+        }
+        let evaluations = u128::from(ROUNDS) * cases.len() as u128;
+        println!(
+            "BENCH {label}: {} cases, {} ns/evaluation",
+            cases.len(),
+            start.elapsed().as_nanos() / evaluations.max(1)
+        );
+    }
+}
+
+#[test]
 fn every_node_failing_changes_no_corpus_verdict() {
     let rule_engine = RuleEngine::for_tests();
     for mut case in corpus() {
@@ -172,9 +211,12 @@ fn rows() -> Vec<Row> {
         tweet_state::rows(),
         takedown::rows(),
         age_gating::rows(),
+        age_verification::rows(),
         exclusive_content::rows(),
         conversation_control::rows(),
         interstitial::rows(),
+        legacy_interstitial::rows(),
+        local_regulations::rows(),
         oon_media::rows(),
         oon_tweet_label::rows(),
         oon_user_label::rows(),

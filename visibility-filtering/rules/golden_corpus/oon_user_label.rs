@@ -15,7 +15,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "NsfwHighRecallUserLabelRule",
+                        "nsfw_high_recall_user_label/drop/unspecified",
                     ),
                 ),
                 (
@@ -23,7 +23,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "NsfwHighRecallUserLabelRule",
+                        "nsfw_high_recall_user_label/drop/unspecified",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -39,7 +39,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "NsfwHighPrecisionUserLabelRule",
+                        "nsfw_high_precision_user_label/drop/unspecified",
                     ),
                 ),
                 (
@@ -47,7 +47,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "NsfwHighPrecisionUserLabelRule",
+                        "nsfw_high_precision_user_label/drop/unspecified",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -62,7 +62,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "SpamHighRecallUserLabelRule",
+                        "spam_high_recall_user_label/drop/unspecified",
                     ),
                 ),
                 (
@@ -70,7 +70,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "SpamHighRecallUserLabelRule",
+                        "spam_high_recall_user_label/drop/unspecified",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -85,7 +85,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "CompromisedUserLabelRule",
+                        "compromised_user_label/drop/unspecified",
                     ),
                 ),
                 (
@@ -93,7 +93,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "CompromisedUserLabelRule",
+                        "compromised_user_label/drop/unspecified",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -106,12 +106,18 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::UnspecifiedReason, "ReadOnlyUserLabelRule"),
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "read_only_user_label/drop/unspecified",
+                    ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::Follower,
-                    dropped(FilteredReason::UnspecifiedReason, "ReadOnlyUserLabelRule"),
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "read_only_user_label/drop/unspecified",
+                    ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
             ],
@@ -125,7 +131,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "ImpersonationHighPrecisionUserLabelRule",
+                        "impersonation_high_precision_user_label/drop/unspecified",
                     ),
                 ),
                 (
@@ -133,7 +139,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "ImpersonationHighPrecisionUserLabelRule",
+                        "impersonation_high_precision_user_label/drop/unspecified",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -146,12 +152,18 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::UnspecifiedReason, "NsfwAvatarImageRule"),
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "nsfw_avatar_image_user_label/drop/unspecified",
+                    ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::Follower,
-                    dropped(FilteredReason::UnspecifiedReason, "NsfwAvatarImageRule"),
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "nsfw_avatar_image_user_label/drop/unspecified",
+                    ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
             ],
@@ -163,12 +175,18 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::UnspecifiedReason, "NsfwBannerImageRule"),
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "nsfw_banner_image_user_label/drop/unspecified",
+                    ),
                 ),
                 (
                     TimelineHomeRecommendations,
                     Role::Follower,
-                    dropped(FilteredReason::UnspecifiedReason, "NsfwBannerImageRule"),
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "nsfw_banner_image_user_label/drop/unspecified",
+                    ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
             ],
@@ -180,7 +198,10 @@ pub(super) fn rows() -> Vec<Row> {
                 (
                     TimelineHomeRecommendations,
                     Role::NonFollower,
-                    dropped(FilteredReason::UnspecifiedReason, "AbusiveHighRecallRule"),
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "abusive_high_recall_user_label/drop/unspecified",
+                    ),
                 ),
                 (TimelineHomeRecommendations, Role::Follower, allow()),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -195,7 +216,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "NsfwNearPerfectAuthorRule",
+                        "nsfw_near_perfect_user_label/drop/unspecified",
                     ),
                 ),
                 (
@@ -203,7 +224,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::Follower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "NsfwNearPerfectAuthorRule",
+                        "nsfw_near_perfect_user_label/drop/unspecified",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Author, allow()),
@@ -219,7 +240,7 @@ pub(super) fn rows() -> Vec<Row> {
                     Role::NonFollower,
                     dropped(
                         FilteredReason::UnspecifiedReason,
-                        "DoNotAmplifyNonFollowerRule",
+                        "do_not_amplify_user_label/drop/unspecified",
                     ),
                 ),
                 (TimelineHomeRecommendations, Role::Follower, allow()),
