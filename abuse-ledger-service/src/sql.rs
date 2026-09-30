@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 X.AI Corp.
 pub const PROBE_SQL: &str =
     "SELECT user_id, hold_id, head, expires_at, case_group_id, reason, action_kind, label \
      FROM ledger.enforcement_holds \

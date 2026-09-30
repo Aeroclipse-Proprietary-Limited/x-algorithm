@@ -86,7 +86,7 @@ mod tests {
     use xai_visibility_filtering::vf_client::XaiVfClient;
     use xai_visibility_filtering_proto::visibility_filtering_service_client::VisibilityFilteringServiceClient;
     use xai_x_service_builder::XService;
-    use xai_x_thrift::action::{self, Action};
+    use xai_x_thrift::tweet_service::{TweetFieldsResultFound, TweetFieldsResultState};
 
     struct NoLabels;
 
@@ -155,11 +155,14 @@ mod tests {
             }),
         };
         let home = client
-            .evaluate_tweets(vf_pb::EvaluateTweetsRequest {
-                safety_level: 8,
-                tweets: vec![tweet(1, None), tweet(1, Some(2)), tweet(2, None)],
-                ..Default::default()
-            })
+            .evaluate_tweets(
+                vf_pb::EvaluateTweetsRequest {
+                    safety_level: 8,
+                    tweets: vec![tweet(1, None), tweet(1, Some(2)), tweet(2, None)],
+                    ..Default::default()
+                },
+                &Default::default(),
+            )
             .await;
         handle.abort();
         let _ = handle.await;
@@ -167,7 +170,9 @@ mod tests {
         assert_eq!(
             home.unwrap(),
             vec![
-                EvaluationResult::Evaluated(Box::new(Action::Allow(action::Allow::new()))),
+                EvaluationResult::Evaluated(Box::new(TweetFieldsResultState::Found(
+                    TweetFieldsResultFound::new(None)
+                ))),
                 EvaluationResult::NotEvaluated,
                 EvaluationResult::Failed,
             ]

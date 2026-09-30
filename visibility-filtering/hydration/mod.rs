@@ -2,6 +2,7 @@ pub mod batch;
 mod decode;
 mod execute;
 pub(crate) mod fallback_cache;
+mod fetcher;
 pub mod metrics;
 pub(crate) mod plan;
 pub(crate) mod sources;
@@ -9,13 +10,12 @@ mod store;
 pub mod tweet_source;
 
 use crate::models::{
-    ClientCapability, HydratedTweetCandidate, PureCore, RawCandidate, TweetId, ViewerFeatures,
+    ClientCapability, HydratedTweetCandidate, RawCandidate, TweetId, ViewerFeatures,
 };
-use batch::TweetHydrationBatch;
 pub(crate) use decode::author::fallback_cache as author_fallback_cache;
 pub(crate) use decode::tweet::pure_core_fallback_cache;
 pub(crate) use plan::HydrationPlan;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
@@ -111,6 +111,7 @@ pub(crate) struct HydrationRequest<'a> {
     country_code: Option<String>,
     client_capability: ClientCapability,
     raw_candidates: &'a [RawCandidate],
+    is_expanding_retweet_sources: bool,
 }
 
 impl<'a> HydrationRequest<'a> {
@@ -125,6 +126,14 @@ impl<'a> HydrationRequest<'a> {
             country_code,
             client_capability,
             raw_candidates,
+            is_expanding_retweet_sources: false,
+        }
+    }
+
+        pub(crate) fn with_retweet_sources(self, is_expanding_retweet_sources: bool) -> Self {
+        Self {
+            is_expanding_retweet_sources,
+            ..self
         }
     }
 }
@@ -139,12 +148,53 @@ pub(crate) fn candidate_count_by_key<K: Eq + Hash>(
     candidate_count_by_key
 }
 
-pub(crate) struct HydrationOutput {
-    pub(crate) viewer_features: ViewerFeatures,
-    pub(crate) candidates: Vec<HydratedTweetCandidate>,
-    pub(crate) safety_labels: HashMap<TweetId, Arc<vf_pb::SafetyLabelMap>>,
-    pub(crate) failed_ids: HashSet<TweetId>,
-    pub(crate) pure_cores: TweetHydrationBatch<PureCore>,
+pub(crate) struct Hydration {
+    viewer: ViewerFeatures,
+    tweets: HashMap<TweetId, HydratedTweet>,
+    has_fetched_sources: bool,
+}
+
+impl Hydration {
+    pub(crate) fn viewer(&self) -> &ViewerFeatures {
+        &self.viewer
+    }
+
+    pub(crate) fn tweet(&self, id: TweetId) -> Option<&HydratedTweet> {
+        self.tweets.get(&id)
+    }
+
+        pub(crate) fn has_fetched_sources(&self) -> bool {
+        self.has_fetched_sources
+    }
+}
+
+pub(crate) struct HydratedTweet {
+        candidate: Option<HydratedTweetCandidate>,
+        has_failed_node: bool,
+    source_tweet_id: Option<TweetId>,
+    safety_labels: Option<Arc<vf_pb::SafetyLabelMap>>,
+}
+
+impl HydratedTweet {
+    pub(crate) fn candidate(&self) -> Option<&HydratedTweetCandidate> {
+        self.candidate.as_ref()
+    }
+
+    pub(crate) fn has_failed_node(&self) -> bool {
+        self.has_failed_node
+    }
+
+        pub(crate) fn is_evaluable(&self) -> bool {
+        self.candidate.is_some() && !self.has_failed_node
+    }
+
+    pub(crate) fn source_tweet_id(&self) -> Option<TweetId> {
+        self.source_tweet_id
+    }
+
+    pub(crate) fn safety_labels(&self) -> Option<&Arc<vf_pb::SafetyLabelMap>> {
+        self.safety_labels.as_ref()
+    }
 }
 
 #[cfg(test)]

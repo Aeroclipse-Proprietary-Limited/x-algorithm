@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 X.AI Corp.
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -259,17 +261,22 @@ pub fn make_tls() -> crate::tls::MakeLedgerTls {
         .with_protocol_versions(&[&rustls::version::TLS13])
         .expect("aws-lc-rs supports TLS 1.3")
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert { provider }))
+        .with_custom_certificate_verifier(Arc::new(ChannelBindingOnlyVerifier { provider }))
         .with_no_client_auth();
     crate::tls::MakeLedgerTls::new(config)
 }
 
+/// The server's certificate chain and hostname are not verified: the database
+/// certificate is issued by an internal CA this service does not carry. The
+/// server is authenticated by SCRAM-SHA-256-PLUS channel binding, which
+/// `parse_dsn` requires, so a party presenting a different certificate cannot
+/// complete the login. Handshake signatures are still verified.
 #[derive(Debug)]
-struct AcceptAnyServerCert {
+struct ChannelBindingOnlyVerifier {
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
-impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCert {
+impl rustls::client::danger::ServerCertVerifier for ChannelBindingOnlyVerifier {
     fn verify_server_cert(
         &self,
         _end_entity: &rustls::pki_types::CertificateDer,

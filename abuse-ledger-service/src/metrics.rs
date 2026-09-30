@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 X.AI Corp.
 use lazy_static::lazy_static;
 use prometheus::{
     register_histogram, register_int_counter_vec, register_int_gauge, register_int_gauge_vec,

@@ -173,10 +173,28 @@ impl RequestMetricsGuard {
     }
 }
 
-pub(crate) fn record_phase(rpc: Rpc, stage: &'static str, elapsed: Duration) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub(crate) enum RetweetSources {
+    #[strum(to_string = "none")]
+    NoSource,
+    InBatch,
+    Fetched,
+}
+
+pub(crate) fn record_phase(
+    rpc: Rpc,
+    stage: &'static str,
+    sources: RetweetSources,
+    elapsed: Duration,
+) {
     observe_vm(
         PHASE_MS,
-        &[("stage", stage), ("rpc", rpc.into())],
+        &[
+            ("stage", stage),
+            ("rpc", rpc.into()),
+            ("sources", sources.into()),
+        ],
         millis(elapsed),
     );
 }

@@ -199,6 +199,7 @@ def _make_dataset(
     _use_post_sid = mparams.get("use_post_sid", False)
     _sid_num_levels = mparams.get("sid_num_levels", 6)
     _enable_stale_post = mparams.get("enable_stale_post", False)
+    _ads_head_masking = mparams.get("ads_head_masking", False)
 
     match dataset_type:
         case "aggregated_kafka":
@@ -216,6 +217,7 @@ def _make_dataset(
                 use_post_sid=_use_post_sid,
                 sid_num_levels=_sid_num_levels,
                 enable_stale_post=_enable_stale_post,
+                ads_head_masking=_ads_head_masking,
             )
         case "toy_dataset":
             return PhoenixToyDataset(
@@ -230,6 +232,7 @@ def _make_dataset(
                 use_post_sid=_use_post_sid,
                 sid_num_levels=_sid_num_levels,
                 enable_stale_post=_enable_stale_post,
+                ads_head_masking=_ads_head_masking,
             )
         case _:
             raise ValueError(f"Uknown {dataset_type=}, must be one of {DATASET_TYPES}")

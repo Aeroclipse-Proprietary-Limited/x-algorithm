@@ -1,4 +1,4 @@
-// mirrored from config feature-switch defaults; last sync 2026-09-28T16:00:35Z
+// mirrored from config feature-switch defaults; last sync 2026-09-29T17:02:52Z
 use xai_feature_switches::param;
 
 param!(
@@ -17,7 +17,7 @@ param!(
     PhoenixColdStartMaxResults,
     u32,
     "rust_home_mixer_phoenix_cold_start_max_results",
-    0
+    200
 );
 
 param!(
@@ -460,7 +460,7 @@ param!(
     ColdStartImpressionThreshold,
     u32,
     "rust_home_mixer_cold_start_impression_threshold",
-    1000
+    200
 );
 param!(
     ColdStartSlotMin,
@@ -478,20 +478,20 @@ param!(
     ColdStartFollowerCap,
     i64,
     "rust_home_mixer_cold_start_follower_cap",
-    1000
+    50000
 );
 param!(
     ColdStartMaxPostAgeSecs,
     u64,
     "rust_home_mixer_cold_start_max_post_age_secs",
-    172800
+    7200
 );
 
 param!(
     LowImpressionsMaxPositionRatio,
     f64,
     "rust_home_mixer_low_impressions_max_boost_position_ratio",
-    0.85
+    0.97
 );
 
 param!(
@@ -504,7 +504,7 @@ param!(
     EnableColdStartThompsonSampling,
     bool,
     "rust_home_mixer_enable_cold_start_thompson_sampling",
-    false
+    true
 );
 param!(
     ColdStartBetaAlpha0,

@@ -1,8 +1,8 @@
 use crate::hydration::sources::Sources;
-use crate::hydration::{HydrationOutput, HydrationRequest, Hydrators};
-use crate::models::{ClientCapability, RawCandidate, TweetId, Verdict};
-use crate::rules::metrics::{self as ft_metrics, Rpc};
-use crate::rules::{Evaluation, RuleEngine, SafetyLevel};
+use crate::hydration::{HydratedTweet, Hydration, HydrationRequest, Hydrators};
+use crate::models::{ClientCapability, HydratedTweetCandidate, RawCandidate, TweetId, Verdict};
+use crate::rules::metrics::{self as ft_metrics, RetweetSources, Rpc};
+use crate::rules::{RuleEngine, SafetyLevel};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -24,6 +24,7 @@ pub enum EvaluationStatus {
     Failed,
 }
 
+#[derive(Clone)]
 pub struct FilterOutcome {
     pub tweet_id: TweetId,
     pub source_tweet_id: Option<TweetId>,
@@ -56,10 +57,27 @@ impl FilterTweets {
 
     pub async fn run(&self, request: FilterRequest) -> FilterResponse {
         let hydrated = self.hydrate(request).await;
-        self.evaluate(hydrated)
+        FilterResponse {
+            outcomes: self.evaluate_in_request_order(&hydrated),
+        }
     }
 
     pub(crate) async fn hydrate(&self, request: FilterRequest) -> HydratedRequest {
+        self.hydrate_request(request, false).await
+    }
+
+    pub(crate) async fn hydrate_with_retweet_sources(
+        &self,
+        request: FilterRequest,
+    ) -> HydratedRequest {
+        self.hydrate_request(request, true).await
+    }
+
+    async fn hydrate_request(
+        &self,
+        request: FilterRequest,
+        is_expanding_retweet_sources: bool,
+    ) -> HydratedRequest {
         #[cfg(test)]
         self.client_capabilities
             .lock()
@@ -76,91 +94,140 @@ impl FilterTweets {
                     request.country_code,
                     request.client_capability,
                     &request.candidates,
-                ),
+                )
+                .with_retweet_sources(is_expanding_retweet_sources),
             )
             .await;
         let hydrated_at = Instant::now();
-        ft_metrics::record_phase(request.rpc, "hydration", hydrated_at - started);
+        let retweet_sources = if !is_expanding_retweet_sources {
+            RetweetSources::NoSource
+        } else if hydration.has_fetched_sources() {
+            RetweetSources::Fetched
+        } else if request.candidates.iter().any(|candidate| {
+            hydration
+                .tweet(candidate.tweet_id)
+                .is_some_and(|tweet| tweet.is_evaluable() && tweet.source_tweet_id().is_some())
+        }) {
+            RetweetSources::InBatch
+        } else {
+            RetweetSources::NoSource
+        };
+        ft_metrics::record_phase(
+            request.rpc,
+            "hydration",
+            retweet_sources,
+            hydrated_at - started,
+        );
         HydratedRequest {
             safety_level: request.safety_level,
             rpc: request.rpc,
+            retweet_sources,
             candidates: request.candidates,
             hydration,
         }
     }
 
-    pub(crate) fn evaluate(&self, hydrated: HydratedRequest) -> FilterResponse {
+    pub(crate) fn evaluate_in_request_order(
+        &self,
+        hydrated: &HydratedRequest,
+    ) -> Vec<FilterOutcome> {
         let evaluating = Instant::now();
-        let HydratedRequest {
-            safety_level,
-            rpc,
-            candidates,
-            hydration:
-                HydrationOutput {
-                    viewer_features,
-                    candidates: hydrated_candidates,
-                    safety_labels,
-                    failed_ids,
-                    pure_cores,
-                },
-        } = hydrated;
-        let evaluated: HashMap<TweetId, Evaluation> = hydrated_candidates
-            .iter()
-            .map(|candidate| {
-                (
-                    TweetId(candidate.tweet_id),
-                    self.rule_engine
-                        .evaluate(safety_level, &viewer_features, candidate),
-                )
-            })
+        let outcomes = hydrated
+            .requested_ids()
+            .map(|tweet_id| self.outcome(hydrated, tweet_id, None))
             .collect();
+        ft_metrics::record_phase(
+            hydrated.rpc,
+            "post_hydration",
+            hydrated.retweet_sources,
+            evaluating.elapsed(),
+        );
+        outcomes
+    }
 
-        let outcomes: Vec<FilterOutcome> = candidates
-            .iter()
-            .map(|candidate| {
-                let (verdict, rested_on, status) = match evaluated.get(&candidate.tweet_id) {
-                    None => (
-                        Verdict::unresolved_author(),
-                        Hydrators::empty(),
-                        EvaluationStatus::UnresolvedAuthor,
-                    ),
-                    Some(evaluation) if failed_ids.contains(&candidate.tweet_id) => (
-                        evaluation.verdict.clone(),
-                        evaluation.rested_on,
-                        EvaluationStatus::Failed,
-                    ),
-                    Some(evaluation) => (
-                        evaluation.verdict.clone(),
-                        evaluation.rested_on,
-                        EvaluationStatus::Evaluated,
-                    ),
+    pub(crate) fn evaluate(
+        &self,
+        hydrated: &HydratedRequest,
+        ids: impl IntoIterator<Item = TweetId>,
+        copied_retweets: &HashMap<TweetId, HydratedTweetCandidate>,
+    ) -> HashMap<TweetId, FilterOutcome> {
+        let evaluating = Instant::now();
+        let mut outcomes = HashMap::new();
+        for tweet_id in ids {
+            outcomes.entry(tweet_id).or_insert_with(|| {
+                self.outcome(hydrated, tweet_id, copied_retweets.get(&tweet_id))
+            });
+        }
+        ft_metrics::record_phase(
+            hydrated.rpc,
+            "post_hydration",
+            hydrated.retweet_sources,
+            evaluating.elapsed(),
+        );
+        outcomes
+    }
+
+    fn outcome(
+        &self,
+        hydrated: &HydratedRequest,
+        tweet_id: TweetId,
+        copied_retweet: Option<&HydratedTweetCandidate>,
+    ) -> FilterOutcome {
+        let tweet = hydrated.hydration.tweet(tweet_id);
+        let (verdict, rested_on, status) = match copied_retweet.or_else(|| tweet?.candidate()) {
+            None => (
+                Verdict::unresolved_author(),
+                Hydrators::empty(),
+                EvaluationStatus::UnresolvedAuthor,
+            ),
+            Some(candidate) => {
+                let evaluation = self.rule_engine.evaluate(
+                    hydrated.safety_level,
+                    hydrated.hydration.viewer(),
+                    candidate,
+                );
+                let status = if tweet.is_some_and(HydratedTweet::has_failed_node) {
+                    EvaluationStatus::Failed
+                } else {
+                    EvaluationStatus::Evaluated
                 };
-                FilterOutcome {
-                    tweet_id: candidate.tweet_id,
-                    source_tweet_id: pure_cores
-                        .get(&candidate.tweet_id)
-                        .and_then(|core| core.source_tweet_id),
-                    verdict,
-                    rested_on,
-                    status,
-                    safety_labels: safety_labels
-                        .get(&candidate.tweet_id)
-                        .map(|labels| vf_pb::SafetyLabelMap::clone(labels)),
-                }
-            })
-            .collect();
-
-        ft_metrics::record_phase(rpc, "post_hydration", evaluating.elapsed());
-
-        FilterResponse { outcomes }
+                (evaluation.verdict, evaluation.rested_on, status)
+            }
+        };
+        FilterOutcome {
+            tweet_id,
+            source_tweet_id: tweet.and_then(HydratedTweet::source_tweet_id),
+            verdict,
+            rested_on,
+            status,
+            safety_labels: tweet
+                .and_then(HydratedTweet::safety_labels)
+                .map(|labels| vf_pb::SafetyLabelMap::clone(labels)),
+        }
     }
 }
 
 pub(crate) struct HydratedRequest {
     safety_level: SafetyLevel,
     rpc: Rpc,
-    pub(crate) candidates: Vec<RawCandidate>,
-    pub(crate) hydration: HydrationOutput,
+    retweet_sources: RetweetSources,
+    candidates: Vec<RawCandidate>,
+    hydration: Hydration,
+}
+
+impl HydratedRequest {
+    pub(crate) fn hydration(&self) -> &Hydration {
+        &self.hydration
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retweet_sources(&self) -> RetweetSources {
+        self.retweet_sources
+    }
+
+    pub(crate) fn requested_ids(&self) -> impl ExactSizeIterator<Item = TweetId> + '_ {
+        self.candidates.iter().map(|candidate| candidate.tweet_id)
+    }
 }
 
 #[cfg(test)]

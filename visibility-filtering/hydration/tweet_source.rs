@@ -65,12 +65,12 @@ struct Tweet {
     exclusive_tweet_control: Option<ExclusiveTweetControl>,
     edit_control: Option<EditControl>,
     has_media_refs: bool,
+    has_media_keys: bool,
     has_card_reference: bool,
 }
 
 #[derive(Default)]
 struct CoreData {
-    user_id: u64,
     share: Option<Share>,
     nsfw_user: bool,
     nsfw_admin: bool,
@@ -80,16 +80,6 @@ struct CoreData {
 impl Tweet {
     fn project(self) -> Option<TweetFeatures> {
         let core_data = self.core_data?;
-        let is_pasted = |entity: &MediaEntity| {
-            entity
-                .additional_metadata
-                .as_ref()
-                .and_then(|metadata| metadata.ownership_info.as_ref())
-                .and_then(|ownership| ownership.user_id)
-                .is_some_and(|owner| owner.cast_unsigned() != core_data.user_id)
-        };
-        let has_uploaded_media =
-            self.has_media_refs && (self.media.is_empty() || !self.media.iter().all(is_pasted));
         Some(TweetFeatures {
             source_tweet_id: core_data.share.map(|share| share.source_tweet_id),
             is_nullcast: core_data.nullcast,
@@ -100,7 +90,7 @@ impl Tweet {
             takedown_reasons: self.takedown_reasons,
             media: MediaFeature {
                 has_media: self.has_media_refs || self.has_card_reference,
-                has_uploaded_media,
+                has_uploaded_media: self.has_media_keys,
                 ..media_feature(self.media)
             },
             is_community_tweet: self.has_communities,
@@ -169,6 +159,7 @@ impl TSerializable for Tweet {
                 }
                 Some(157) => tweet.edit_control = Some(EditControl::from_thrift(proto)),
                 Some(162) => tweet.has_media_refs = skip_list_non_empty(proto)?,
+                Some(32766) => tweet.has_media_keys = skip_list_non_empty(proto)?,
                 _ => proto.skip(field.field_type)?,
             }
             proto.read_field_end()?;
@@ -194,7 +185,6 @@ fn read_core_data(proto: &mut dyn TInputProtocol) -> thrift::Result<CoreData> {
             break;
         }
         match field.id {
-            Some(1) => core_data.user_id = proto.read_i64()?.cast_unsigned(),
             Some(7) => core_data.share = Some(Share::from_thrift(proto)),
             Some(9) => core_data.nsfw_user = proto.read_bool()?,
             Some(10) => core_data.nsfw_admin = proto.read_bool()?,
@@ -241,7 +231,7 @@ mod tests {
         TBinaryOutputProtocol, TFieldIdentifier, TListIdentifier, TStructIdentifier,
     };
     use xai_core_entities::entities::EditControlInitial;
-    use xai_x_thrift::media_common::{MediaKey, OwnershipInfo};
+    use xai_x_thrift::media_common::MediaKey;
     use xai_x_thrift::media_information::{AdditionalMetadata, GeoRestrictions, Restrictions};
 
     type Proto<'a> = TBinaryOutputProtocol<&'a mut Vec<u8>>;
@@ -249,7 +239,6 @@ mod tests {
 
     const TWEET_ID: i64 = 10;
     const AUTHOR_ID: i64 = 7001;
-    const PASTED_FROM_AUTHOR_ID: i64 = 7002;
     const SOURCE_TWEET_ID: i64 = 9;
     const CONVERSATION_AUTHOR_ID: i64 = 7003;
 
@@ -324,7 +313,20 @@ mod tests {
         })
     }
 
-    fn media_fixture(has_refs: bool, has_card: bool, entities: &[MediaEntity]) -> Vec<u8> {
+    fn non_empty_list(proto: &mut Proto<'_>, id: i16, non_empty: bool) {
+        list(proto, id, TType::Struct, usize::from(non_empty), |p| {
+            if non_empty {
+                bare_struct(p, |_| {});
+            }
+        });
+    }
+
+    fn media_fixture(
+        has_refs: bool,
+        has_card: bool,
+        keys: Option<bool>,
+        entities: &[MediaEntity],
+    ) -> Vec<u8> {
         encode_tweet(&mut |_| {}, &mut |p| {
             list(p, 7, TType::Struct, entities.len(), |p| {
                 for entity in entities {
@@ -334,11 +336,10 @@ mod tests {
             if has_card {
                 structure(p, 118, |_| {});
             }
-            list(p, 162, TType::Struct, usize::from(has_refs), |p| {
-                if has_refs {
-                    bare_struct(p, |_| {});
-                }
-            });
+            non_empty_list(p, 162, has_refs);
+            if let Some(non_empty) = keys {
+                non_empty_list(p, 32766, non_empty);
+            }
         })
     }
 
@@ -398,6 +399,7 @@ mod tests {
                     })
                 });
                 list(p, 162, TType::Struct, 1, |p| bare_struct(p, |_| {}));
+                list(p, 32766, TType::Struct, 1, |p| bare_struct(p, |_| {}));
             },
         );
         let media = MediaFeature {
@@ -442,6 +444,7 @@ mod tests {
         let bytes = media_fixture(
             true,
             false,
+            Some(true),
             &[
                 restricted_media(true, true, &["us"], &["de"]),
                 restricted_media(true, false, &["gb"], &["fr"]),
@@ -463,47 +466,31 @@ mod tests {
     }
 
     #[test]
-    fn media_presence_comes_from_refs_or_card_reference_and_uploads_exclude_pasted_media() {
-        let owned_by = |tweet_id, user_id| MediaEntity {
-            additional_metadata: Some(AdditionalMetadata {
-                ownership_info: Some(OwnershipInfo {
-                    tweet_id: Some(tweet_id),
-                    user_id: Some(user_id),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+    fn media_presence_comes_from_refs_or_card_reference_and_uploads_from_own_media_keys() {
         for (name, bytes, has_media, has_uploaded_media) in [
-            ("refs", media_fixture(true, false, &[]), true, true),
-            ("card", media_fixture(false, true, &[]), true, false),
+            (
+                "own media keys",
+                media_fixture(true, false, Some(true), &[]),
+                true,
+                true,
+            ),
+            (
+                "empty media keys",
+                media_fixture(true, false, Some(false), &[]),
+                true,
+                false,
+            ),
+            (
+                "no media keys field",
+                media_fixture(true, false, None, &[]),
+                true,
+                false,
+            ),
+            ("card", media_fixture(false, true, None, &[]), true, false),
             (
                 "entities only",
-                media_fixture(false, false, &[MediaEntity::default()]),
+                media_fixture(false, false, None, &[MediaEntity::default()]),
                 false,
-                false,
-            ),
-            (
-                "uploaded",
-                media_fixture(true, false, &[owned_by(TWEET_ID, AUTHOR_ID)]),
-                true,
-                true,
-            ),
-            (
-                "reused from the author's older post",
-                media_fixture(true, false, &[owned_by(SOURCE_TWEET_ID, AUTHOR_ID)]),
-                true,
-                true,
-            ),
-            (
-                "pasted",
-                media_fixture(
-                    true,
-                    false,
-                    &[owned_by(SOURCE_TWEET_ID, PASTED_FROM_AUTHOR_ID)],
-                ),
-                true,
                 false,
             ),
         ] {

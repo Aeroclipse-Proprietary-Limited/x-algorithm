@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 X.AI Corp.
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 

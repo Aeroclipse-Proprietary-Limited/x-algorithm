@@ -15,6 +15,9 @@ const HYDRATOR_LATENCY_MS: &str = "vf_hydrator_latency_ms";
 const HYDRATOR_KEYS: &str = "vf_hydrator_keys";
 const HYDRATOR_TWEET_IDS: &str = "vf_hydrator_tweet_ids";
 const HYDRATOR_BATCH_SIZE: &str = "vf_hydrator_batch_size";
+const HYDRATOR_EXPANDED_BATCHES: &str = "vf_hydrator_expanded_batches";
+const HYDRATOR_EXPANDED_KEYS: &str = "vf_hydrator_expanded_keys";
+const HYDRATOR_UNASKED_KEYS: &str = "vf_hydrator_unasked_keys";
 const FALLBACK_CACHE_KEYS: &str = "vf_fallback_cache_keys";
 const FALLBACK_CACHE_ENTRIES: &str = "vf_fallback_cache_entries";
 const AUTHOR_LABELS: &str = "vf_author_labels";
@@ -46,14 +49,18 @@ struct KeyedResultCounts {
 impl KeyedResultCounts {
     fn from_batch<K, V>(
         candidate_count_by_key: &HashMap<K, usize>,
-        batch: &HydrationBatch<K, V>,
+        batches: &impl AsRef<[HydrationBatch<K, V>]>,
     ) -> Self
     where
         K: Eq + Hash,
     {
         let mut counts = Self::default();
         for (key, candidate_count) in candidate_count_by_key {
-            match batch.hydrated(key) {
+            let hydrated = batches
+                .as_ref()
+                .iter()
+                .find_map(|batch| batch.hydrated(key));
+            match hydrated {
                 Some(Hydrated::Found(_) | Hydrated::NotFound) => {
                     counts.success_keys += 1;
                     counts.success_candidates += candidate_count;
@@ -231,6 +238,20 @@ pub(crate) fn record_batch_size(client: &str, candidate_count: usize) {
     );
 }
 
+pub(crate) fn record_expanded_batch(client: &str, method: &str, keys: usize) {
+    let labels = [("client", client), ("method", method)];
+    incr(HYDRATOR_EXPANDED_BATCHES, &labels, 1);
+    incr_nonzero(HYDRATOR_EXPANDED_KEYS, &labels, keys as u64);
+}
+
+pub(crate) fn record_unasked_keys(client: &str, method: &str, keys: usize) {
+    incr_nonzero(
+        HYDRATOR_UNASKED_KEYS,
+        &[("client", client), ("method", method)],
+        keys as u64,
+    );
+}
+
 pub(crate) fn record_fallback_cache_keys(
     facet: &'static str,
     fresh: usize,
@@ -256,30 +277,33 @@ pub(crate) fn record_fallback_cache_keys(
     }
 }
 
-pub(crate) async fn timed_results<K, V>(
+pub(crate) async fn timed_results<K, V, A>(
     client: &str,
     method: &str,
     safety_level: SafetyLevel,
     candidate_count_by_key: &HashMap<K, usize>,
     timeout: Duration,
-    fut: impl Future<Output = HydrationBatch<K, V>>,
-) -> HydrationBatch<K, V>
+    fut: impl Future<Output = A>,
+    timed_out: impl FnOnce(HydrationBatch<K, V>) -> A,
+) -> A
 where
     K: Copy + Eq + Hash,
+    A: AsRef<[HydrationBatch<K, V>]>,
 {
     let start = Instant::now();
-    let batch = fut
-        .with_budget(timeout)
-        .await
-        .unwrap_or_else(|_| HydrationBatch::timed_out(candidate_count_by_key.keys().copied()));
+    let answer = fut.with_budget(timeout).await.unwrap_or_else(|_| {
+        timed_out(HydrationBatch::timed_out(
+            candidate_count_by_key.keys().copied(),
+        ))
+    });
     record_keyed_hydrator_request(
         client,
         method,
         safety_level,
-        KeyedResultCounts::from_batch(candidate_count_by_key, &batch),
+        KeyedResultCounts::from_batch(candidate_count_by_key, &answer),
         start.elapsed().as_secs_f64() * 1000.0,
     );
-    batch
+    answer
 }
 
 fn incr(metric: &str, labels: &[(&str, &str)], count: u64) {
@@ -312,6 +336,7 @@ fn observe(metric: &str, labels: &[(&str, &str)], value: f64, buckets: Histogram
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::identity;
 
     #[test]
     fn dashboard_generator_pins_the_author_labels_root_edges_method_wingman_metric_and_key_results()
@@ -452,6 +477,7 @@ mod tests {
             &expected,
             Duration::ZERO,
             never,
+            identity,
         )
         .await;
 

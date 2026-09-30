@@ -1,7 +1,7 @@
-use crate::models::TweetId;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::slice;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HydrationError {
@@ -47,11 +47,11 @@ impl<V, E> From<Result<Option<V>, E>> for Hydrated<V> {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct HydrationBatch<K, V> {
     results: HashMap<K, Hydrated<V>>,
 }
 
-pub(crate) type TweetHydrationBatch<V> = HydrationBatch<TweetId, V>;
 pub(crate) type RawHydrationBatch<V> = HydrationBatch<u64, V>;
 
 impl<K: Eq + Hash, V> HydrationBatch<K, V> {
@@ -104,29 +104,13 @@ impl<K: Eq + Hash, V> HydrationBatch<K, V> {
         self.results.get(key)
     }
 
-    pub(crate) fn incomplete_keys(&self) -> impl Iterator<Item = &K> {
-        self.results
-            .iter()
-            .filter(|(_, hydrated)| !hydrated.is_complete())
-            .map(|(key, _)| key)
-    }
-
     pub(crate) fn into_hydrated(self) -> HashMap<K, Hydrated<V>> {
         self.results
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, key: &K) -> Option<&V> {
         self.results.get(key).and_then(Hydrated::value)
-    }
-
-    pub(crate) fn map_keys<K2: Eq + Hash>(self, f: impl Fn(K) -> K2) -> HydrationBatch<K2, V> {
-        HydrationBatch {
-            results: self
-                .results
-                .into_iter()
-                .map(|(key, hydrated)| (f(key), hydrated))
-                .collect(),
-        }
     }
 
     pub(crate) fn map<V2>(self, mut f: impl FnMut(V) -> V2) -> HydrationBatch<K, V2> {
@@ -145,6 +129,12 @@ impl<K: Eq + Hash, V> HydrationBatch<K, V> {
                 })
                 .collect(),
         }
+    }
+}
+
+impl<K, V> AsRef<[HydrationBatch<K, V>]> for HydrationBatch<K, V> {
+    fn as_ref(&self) -> &[Self] {
+        slice::from_ref(self)
     }
 }
 
@@ -201,20 +191,5 @@ mod tests {
         assert_eq!(mapped.get(&1), Some(&70));
         assert_eq!(mapped.hydrated(&2), Some(&Hydrated::NotFound));
         assert!(matches!(mapped.hydrated(&3), Some(&Hydrated::Failed(_))));
-    }
-
-    #[test]
-    fn only_found_and_not_found_keys_are_complete() {
-        let batch = HydrationBatch::from_hydrated(HashMap::from([
-            (1, Hydrated::Found(7)),
-            (2, Hydrated::NotFound),
-            (3, Hydrated::Partial(7)),
-            (4, Hydrated::Failed(HydrationError::Timeout)),
-        ]));
-
-        let mut incomplete: Vec<u64> = batch.incomplete_keys().copied().collect();
-        incomplete.sort_unstable();
-        assert_eq!(incomplete, [3, 4]);
-        assert_eq!(batch.get(&3), Some(&7));
     }
 }

@@ -19,12 +19,19 @@ from numpy import typing as npt
 from xai_configlib import Config as Config
 from xai_configlib import configclass as configclass
 from xai_proto import recsys_pb2
+from xrex.data.recsys.ads_head_masking import (
+    ADS_FAMILY_SLICE_HEADS,
+    FRESH_STREAM_ID,
+)
+from xrex.data.recsys.ads_late_window import ADS_LATE_WINDOW_TWIN_HEAD_INDICES
 from xrex.data.recsys.constants import (
     CLICK_ACTION_INDEX,
     MACT_IN_APP_LOSS_ACTION_INDICES,
+    MMP_CLICK_ACTION_INDEX,
     NEGATIVE_FEEDBACK_HEAD_INDICES,
     PURCHASE_VALUE_ACTION_INDEX,
     SEARCH_RELEVANCE_ACTION_INDICES,
+    LineItemObjective,
     action_type_map,
     engagement_to_ids,
 )
@@ -39,12 +46,6 @@ from xrex.data.recsys.feature_config import (
 from xrex.data.recsys.recsys_batch import EMBEDDING_CONFIG, EmbeddingType, RecsysFeaturesBatch
 from xrex.data.recsys.safety_filter import apply_safety_filter, safety_filter_stats
 from xrex.data.recsys.sequence_packing import SequencePackedLayout
-from xrex.models.ads_head_masking import (
-    EARLY_RELABEL_STREAM_ID,
-    FRESH_STREAM_ID,
-    ads_head_masking_factor,
-    ads_late_window_no_early_slice,
-)
 from xrex.models.layers import Linear, get_parameter
 from xrex.models.loss_recsys import (
     binary_threshold_loss_compute,
@@ -606,6 +607,13 @@ class RecsysAggregatedModelConfig(Config):
         ):
             raise ValueError("purchase_value_smoothing_windows must be positive sample counts")
 
+    def validate_ads_head_masking(self) -> None:
+        if self.ads_head_masking and self.use_seqpack:
+            raise ValueError(
+                "ads_head_masking is not supported with use_seqpack: the per-candidate, "
+                "per-head trained_candidate_mask has no packed-layout equivalent"
+            )
+
     continuous_action_hidden_dim: int = 64
 
     final_logit_cap: float = -1.0
@@ -619,6 +627,8 @@ class RecsysAggregatedModelConfig(Config):
     candidate_seq_len: int = 128
 
     right_anchored_rope: bool = False
+
+    attend_padded_history: bool = False
 
     use_seqpack: bool = False
 
@@ -702,6 +712,7 @@ class RecsysAggregatedModelConfig(Config):
 
     def make(self, sharding_context: ShardingContext) -> RecsysAggregatedModel:
         self.validate_purchase_value()
+        self.validate_ads_head_masking()
 
         if self.feature_prep_enabled:
             fp = self.feature_prep
@@ -1386,6 +1397,20 @@ def cast_jax(arr: npt.NDArray) -> jax.Array:
     return typing.cast(jax.Array, arr)
 
 
+def attention_segment_ids(
+    padding_mask: jax.Array, candidate_start_offset: int, attend_padded_history: bool
+) -> jax.Array:
+    idx = jnp.arange(padding_mask.shape[1], dtype=jnp.int32)[None, :]
+    is_candidate = idx >= candidate_start_offset
+    valid = padding_mask
+    if attend_padded_history:
+        valid = jnp.logical_or(padding_mask, jnp.logical_not(is_candidate))
+    return jnp.broadcast_to(
+        jnp.where(valid, jnp.where(is_candidate, -1, 1), 0),
+        padding_mask.shape,
+    ).astype(jnp.int32)
+
+
 def build_metric_masks(
     mask: jax.Array,
     raw_targets: jax.Array,
@@ -1398,6 +1423,7 @@ def build_metric_masks(
     no_history_mask: jax.Array | None = None,
     dpa_product_key: jax.Array | None = None,
     sample_source: jax.Array | None = None,
+    trained_candidate_mask: jax.Array | None = None,
     *,
     ads_head_masking: bool = False,
     condition_search_relevance_on_prompt: bool = False,
@@ -1467,7 +1493,7 @@ def build_metric_masks(
         product_surface == recsys_pb2.ProductSurface.PRODUCT_SURFACE_HOME_TIMELINE_RANKING
     )
     website_clicks_objective = (
-        (line_item_objective == 5).astype(mask.dtype)
+        (line_item_objective == LineItemObjective.WEBSITE_CLICKS).astype(mask.dtype)
         if line_item_objective is not None
         else jnp.zeros_like(mask)
     )
@@ -1487,21 +1513,23 @@ def build_metric_masks(
     masks["non_negative_dpa"] = non_negative_mask * dpa_mask
 
     if ads_head_masking:
-        click_mask = raw_targets[:, :, CLICK_ACTION_INDEX].astype(mask.dtype)
-        masks["clicked"] = mask * click_mask
-        masks["non_negative_clicked"] = mask * (1 - negative_sample_mask) * click_mask
+        web_click_mask = raw_targets[:, :, CLICK_ACTION_INDEX].astype(mask.dtype)
+        app_click_mask = raw_targets[:, :, MMP_CLICK_ACTION_INDEX].astype(mask.dtype)
+        masks["website_clicked"] = mask * web_click_mask
+        masks["non_negative_website_clicked"] = non_negative_mask * web_click_mask
+        masks["app_clicked"] = mask * app_click_mask
+        masks["non_negative_app_clicked"] = non_negative_mask * app_click_mask
+        assert trained_candidate_mask is not None, "ads_head_masking needs trained_candidate_mask"
         if sample_source is None:
             fresh = jnp.ones_like(mask)
-            early = jnp.zeros_like(mask)
         else:
             fresh = (sample_source == FRESH_STREAM_ID).astype(mask.dtype)
-            early = (sample_source == EARLY_RELABEL_STREAM_ID).astype(mask.dtype)
-        click_mask = raw_targets[:, :, CLICK_ACTION_INDEX].astype(mask.dtype)
         masks["fresh"] = mask * fresh
-        masks["delayed_clicked"] = mask * early * click_mask
-        masks["delayed_non_clicked"] = mask * early * (1 - click_mask)
-        masks["late_split_no_early"] = ads_late_window_no_early_slice(
-            mask, raw_targets, click_mask, sample_source
+        trained = trained_candidate_mask.astype(mask.dtype)
+        for slice_name, head in ADS_FAMILY_SLICE_HEADS.items():
+            masks[slice_name] = mask * trained[:, :, head]
+        masks["late_split_no_early"] = mask * jnp.prod(
+            trained[:, :, jnp.array(ADS_LATE_WINDOW_TWIN_HEAD_INDICES)], axis=-1
         )
         masks["fresh_home_website_clicks"] = (
             masks["fresh"] * home_timeline_mask * website_clicks_objective
@@ -1718,6 +1746,7 @@ class RecsysAggregatedModel(hk.Module):
         no_history_mask: jax.Array | None = None,
         dpa_product_key: jax.Array | None = None,
         sample_source: jax.Array | None = None,
+        trained_candidate_mask: jax.Array | None = None,
     ) -> dict[str, jax.Array]:
         return build_metric_masks(
             mask,
@@ -1731,6 +1760,7 @@ class RecsysAggregatedModel(hk.Module):
             no_history_mask,
             dpa_product_key,
             sample_source,
+            trained_candidate_mask,
             ads_head_masking=self.config.ads_head_masking,
             condition_search_relevance_on_prompt=self.config.condition_search_relevance_on_prompt,
             enable_platform_metrics=self.config.enable_platform_metrics,
@@ -1751,6 +1781,7 @@ class RecsysAggregatedModel(hk.Module):
         no_history_mask: jax.Array | None = None,
         dpa_product_key: jax.Array | None = None,
         sample_source: jax.Array | None = None,
+        trained_candidate_mask: jax.Array | None = None,
         stats: dict | None = None,
         rce_ema: dict[str, jax.Array] | None = None,
         rce_alpha: jax.Array | None = None,
@@ -1773,6 +1804,7 @@ class RecsysAggregatedModel(hk.Module):
             no_history_mask,
             dpa_product_key,
             sample_source,
+            trained_candidate_mask,
         )
 
         return self._compute_metrics_after_masks(
@@ -3133,6 +3165,7 @@ class RecsysAggregatedModel(hk.Module):
                 raw_weights = jnp.broadcast_to(sample_weights, targets.shape[:2])
 
         source_id: jax.Array | None = None
+        trained_heads: jax.Array | None = None
         sample_source = batch.get("sample_source")
         if sample_source is not None:
             source_id = cast_jax(sample_source).astype(jnp.float32)
@@ -3245,11 +3278,9 @@ class RecsysAggregatedModel(hk.Module):
                 dpa_product_key,
             )
 
-            idx = jnp.arange(padding_mask.shape[1], dtype=jnp.int32)[None, :]
-            segment_ids = jnp.broadcast_to(
-                jnp.where(padding_mask, jnp.where(idx >= candidate_start_offset, -1, 1), 0),
-                padding_mask.shape,
-            ).astype(jnp.int32)
+            segment_ids = attention_segment_ids(
+                padding_mask, candidate_start_offset, self.config.attend_padded_history
+            )
 
             if self.config.right_anchored_rope:
                 positions = right_anchored_rope_positions(
@@ -3292,7 +3323,8 @@ class RecsysAggregatedModel(hk.Module):
             if trained_candidate_mask is not None:
                 keep = cast_jax(trained_candidate_mask)
                 pad_len = target_padding_mask.shape[1] - keep.shape[1]
-                target_padding_mask = target_padding_mask & jnp.pad(keep, ((0, 0), (0, pad_len)))
+                trained_heads = jnp.pad(keep, ((0, 0), (0, pad_len), (0, 0)), constant_values=True)
+                target_padding_mask = target_padding_mask & trained_heads.any(-1)
 
             history_padding = padding_mask[
                 :,
@@ -3350,9 +3382,8 @@ class RecsysAggregatedModel(hk.Module):
             zero_mask = negative_sample_mask[:, :, None] * neg_head_mask
             loss_mask = loss_mask * (1 - zero_mask)
 
-        if self.config.ads_head_masking:
-            assert source_id is not None
-            loss_mask = loss_mask * ads_head_masking_factor(targets, source_id, num_actions)
+        if trained_heads is not None:
+            loss_mask = loss_mask * trained_heads.astype(loss_mask.dtype)
 
         if self.config.mact_in_app_loss_weight != 1.0:
             mact_w = (
@@ -3420,6 +3451,7 @@ class RecsysAggregatedModel(hk.Module):
             no_history_mask=no_history_mask,
             dpa_product_key=dpa_product_key[..., 0] if dpa_product_key is not None else None,
             sample_source=source_id,
+            trained_candidate_mask=trained_heads,
             stats=stats,
             rce_ema=rce_ema,
             rce_alpha=rce_alpha,
@@ -3457,6 +3489,7 @@ class RecsysAggregatedModel(hk.Module):
                 no_history_mask=no_history_mask,
                 dpa_product_key=dpa_product_key[..., 0] if dpa_product_key is not None else None,
                 sample_source=source_id,
+                trained_candidate_mask=trained_heads,
             )
 
             continuous_base_mask = target_padding_mask
@@ -3597,10 +3630,9 @@ class RecsysAggregatedModel(hk.Module):
                 pad_len = target_padding_mask.shape[1] - value.shape[1]
                 return jnp.pad(value, ((0, 0), (0, pad_len)))
 
-            keeper = batch["candidate_seq"].get("trained_candidate_mask")
             keeper_mask = (
-                value_operand("trained_candidate_mask", jnp.bool_)
-                if keeper is not None
+                trained_heads.any(-1)
+                if trained_heads is not None
                 else jnp.ones_like(target_padding_mask, dtype=jnp.bool_)
             )
             value_mask = purchase_value_valid_mask(
@@ -3631,9 +3663,11 @@ class RecsysAggregatedModel(hk.Module):
             continuous_action_loss_total += self.config.purchase_value_loss_weight * value_loss
             value_sums = value_stats.pop("_purchase-value-sums")
             stats.update(value_stats)
-            slice_count = stats.get("delayed_clicked_num_tokens", jnp.zeros((), jnp.float32))
-            stats["purchase-value_delayed_clicked-ratio-valid"] = value_stats[
-                "purchase-value_delayed_clicked-valid-count"
+            slice_count = stats.get(
+                "delayed_website_clicked_num_tokens", jnp.zeros((), jnp.float32)
+            )
+            stats["purchase-value_delayed_website_clicked-ratio-valid"] = value_stats[
+                "purchase-value_delayed_website_clicked-valid-count"
             ] / jnp.maximum(slice_count, 1)
             if rce_ema is not None and rce_alpha is not None and smoothing_windows is not None:
                 smoothed_stats, value_ema = purchase_value_smoothed_stats(
@@ -3776,11 +3810,9 @@ class RecsysAggregatedModel(hk.Module):
                 None,
                 None,
             )
-            idx = jnp.arange(padding_mask.shape[1], dtype=jnp.int32)[None, :]
-            segment_ids = jnp.broadcast_to(
-                jnp.where(padding_mask, jnp.where(idx >= candidate_start_offset, -1, 1), 0),
-                padding_mask.shape,
-            ).astype(jnp.int32)
+            segment_ids = attention_segment_ids(
+                padding_mask, candidate_start_offset, self.config.attend_padded_history
+            )
 
             if self.config.right_anchored_rope:
                 positions = right_anchored_rope_positions(

@@ -14,7 +14,7 @@ use crate::models::{HydratedTweetCandidate, ViewerFeatures};
 #[cfg(test)]
 use crate::params::CountryLists;
 use context::RuleContext;
-pub use registry::{Evaluation, RuleEngine, SafetyLevel};
+pub use registry::{RuleEngine, SafetyLevel};
 #[cfg(test)]
 use rule_spec::Predicate;
 

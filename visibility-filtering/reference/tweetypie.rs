@@ -34,7 +34,7 @@ use xai_x_rpc::grpc_client::{ChannelBuilder, TlsMode};
 use xai_x_rpc::retry::RetryConfig;
 use xai_x_rpc::timed_buffer::DEFAULT_BUFFER_MAX_WAIT;
 use xai_x_rpc::total_timeout::DEFAULT_TOTAL_TIMEOUT;
-use xai_x_thrift::action::{Action, Drop as ThriftDrop};
+use xai_x_thrift::action::Action;
 use xai_x_thrift::get_tweet_fields::{
     GetTweetFieldsOptions, GetTweetFieldsResult, TweetFieldsResultState,
     VISIBILITY_POLICY_USER_VISIBLE,
@@ -510,10 +510,10 @@ fn vf_label(outcome: &FilterOutcome) -> Label {
     if outcome.status != EvaluationStatus::Evaluated {
         return label(Class::Failed, NONE);
     }
-    match treatment::thrift_action(&outcome.verdict, SAFETY_LEVEL) {
-        Action::Drop(ThriftDrop { reason: None, .. }) => label(Class::BareDrop, NONE),
-        action => debug_label(&action),
-    }
+    tp_label(&treatment::thrift_result_state(
+        &outcome.verdict,
+        SAFETY_LEVEL,
+    ))
 }
 
 fn tp_label(state: &TweetFieldsResultState) -> Label {
@@ -563,7 +563,9 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use xai_visibility_filtering::models::FilteredReason as VfFilteredReason;
-    use xai_x_thrift::action::{BlockedViewer, LimitedEngagementReason, LimitedEngagements};
+    use xai_x_thrift::action::{
+        BlockedViewer, Drop as ThriftDrop, LimitedEngagementReason, LimitedEngagements,
+    };
     use xai_x_thrift::get_tweet_fields::TweetFieldsResultFound;
     use xai_x_thrift::safety_result::SafetyResult;
     use xai_x_thrift::tweet_service::{
@@ -680,7 +682,7 @@ mod tests {
         let bucket = compared(&allow, Some(&suspended)).bucket();
         assert_eq!(
             (bucket.vf, bucket.vf_rule),
-            (pair("drop", "suspended_author"), "suspended_author/drop")
+            (pair("drop", "author_is_suspended"), "suspended_author/drop")
         );
     }
 

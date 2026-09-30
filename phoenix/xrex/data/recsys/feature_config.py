@@ -154,7 +154,7 @@ OPTIONAL_COLUMNS: list[str] = [
     "sample_source",
     "valueLabelValidSeq",
     "valueBaselineMeanUsdSeq",
-    "conversionKeepMask",
+    "conversionKeepBits",
     "webConvTimeOnSiteInferredMsSeq",
     "webConvTimeOnSiteMeasuredMsSeq",
     "webConvTrackingIntegrationSeq",

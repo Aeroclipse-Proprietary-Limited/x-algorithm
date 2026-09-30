@@ -1,6 +1,6 @@
 use crate::filter::{EvaluationStatus, FilterOutcome, FilterRequest, FilterTweets};
 use crate::filter_tweets::normalize_viewer_id;
-use crate::models::{RawCandidate, TweetId};
+use crate::models::{RawCandidate, TweetId, Verdict};
 use crate::params::ClientSwitches;
 use crate::retweet;
 use crate::rules::metrics::{self as ft_metrics, RequestMetricsGuard, Rpc};
@@ -127,23 +127,23 @@ impl EvaluateTweetsEndpoint {
                             status: EvaluationStatus::Evaluated,
                             verdict,
                             ..
-                        }) => match xai_x_thrift::serialize_compact(&treatment::thrift_action(
-                            verdict,
-                            safety_level,
-                        )) {
-                            Ok(bytes) => Outcome::ActionThriftCompact(bytes.into()),
-                            Err(_) => Outcome::Failed(vf_pb::Failed {}),
-                        },
+                        }) => evaluated_outcome(verdict, safety_level),
                         _ => Outcome::Failed(vf_pb::Failed {}),
                     }
                 };
                 vf_pb::TweetEvaluation {
-                    tweet: Some(tweet),
                     outcome: Some(outcome),
                 }
             })
             .collect();
         Ok(vf_pb::EvaluateTweetsResponse { results })
+    }
+}
+
+fn evaluated_outcome(verdict: &Verdict, level: SafetyLevel) -> Outcome {
+    match xai_x_thrift::serialize_compact(&treatment::thrift_result_state(verdict, level)) {
+        Ok(bytes) => Outcome::ResultStateThriftCompact(bytes.into()),
+        Err(_) => Outcome::Failed(vf_pb::Failed {}),
     }
 }
 
@@ -158,6 +158,20 @@ mod tests {
         GizmoduckUser, GizmoduckUserResult, PureCoreData, Safety, UserResponseState,
     };
     use xai_x_thrift::action::{self, Action, DropReason};
+    use xai_x_thrift::safety_result::{FilteredReason as ThriftFilteredReason, SafetyResult};
+    use xai_x_thrift::tweet_service::{
+        TweetFieldsResultFiltered, TweetFieldsResultFound, TweetFieldsResultState,
+    };
+
+    fn encoded(state: TweetFieldsResultState) -> Outcome {
+        Outcome::ResultStateThriftCompact(xai_x_thrift::serialize_compact(&state).unwrap().into())
+    }
+
+    fn filtered(reason: ThriftFilteredReason) -> Outcome {
+        encoded(TweetFieldsResultState::Filtered(
+            TweetFieldsResultFiltered::new(reason),
+        ))
+    }
 
     #[tokio::test]
     async fn evaluate_tweets_gates_levels_maps_outcomes_and_merges_retweet_sources() {
@@ -218,14 +232,19 @@ mod tests {
             tweet(3, None),
             tweet(3, None),
         ];
-        for (level, action) in [
+        for (level, evaluated) in [
             (
                 ThriftLevel::FILTER_ALL.0,
-                Action::Drop(action::Drop::new(Some(DropReason::Unspecified(true)), None)),
+                filtered(ThriftFilteredReason::SafetyResult(SafetyResult::new(
+                    None,
+                    Action::Drop(action::Drop::new(Some(DropReason::Unspecified(true)), None)),
+                ))),
             ),
             (
                 ThriftLevel::TIMELINE_HOME_HYDRATION.0,
-                Action::Allow(action::Allow::new()),
+                encoded(TweetFieldsResultState::Found(TweetFieldsResultFound::new(
+                    None,
+                ))),
             ),
         ] {
             let response = endpoint
@@ -240,34 +259,18 @@ mod tests {
             assert_eq!(
                 response
                     .results
-                    .iter()
-                    .map(|r| r.tweet.unwrap())
-                    .collect::<Vec<_>>(),
-                tweets
-            );
-            let bytes = xai_x_thrift::serialize_compact(&action).unwrap();
-            assert_eq!(
-                response
-                    .results
                     .into_iter()
                     .map(|r| r.outcome.unwrap())
                     .collect::<Vec<_>>(),
                 vec![
                     Outcome::Failed(vf_pb::Failed {}),
                     Outcome::NotEvaluated(vf_pb::NotEvaluated {}),
-                    Outcome::ActionThriftCompact(bytes.clone().into()),
-                    Outcome::ActionThriftCompact(bytes.into()),
+                    evaluated.clone(),
+                    evaluated,
                 ]
             );
         }
-        let suspended = Outcome::ActionThriftCompact(
-            xai_x_thrift::serialize_compact(&Action::Drop(action::Drop::new(
-                Some(DropReason::SuspendedAuthor(true)),
-                None,
-            )))
-            .unwrap()
-            .into(),
-        );
+        let suspended = filtered(ThriftFilteredReason::AuthorIsSuspended(true));
         for (tweet_ids, core_data_calls, outcomes) in [
             (vec![4, 6], 1, vec![suspended.clone(), suspended.clone()]),
             (
@@ -302,7 +305,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_forwarded_client_reaches_both_passes_and_no_header_gets_the_defaults() {
+    async fn the_forwarded_client_reaches_the_fetched_source_and_no_header_gets_the_defaults() {
         use crate::models::ClientCapability;
         use crate::rules::fixtures::CLIENT_CLASSES;
         let sources = Arc::new(
@@ -351,7 +354,7 @@ mod tests {
             endpoint.handle(request).await.unwrap();
             assert_eq!(
                 std::mem::take(&mut *filter_tweets.client_capabilities.lock().unwrap()),
-                [expected; 2]
+                [expected]
             );
         }
     }

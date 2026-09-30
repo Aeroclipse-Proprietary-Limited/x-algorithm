@@ -23,7 +23,36 @@ pub(crate) enum Source {
 pub(super) enum Part {
     Column,
     Fields(&'static [QueryFields]),
-    Edge(Graph, EdgeDirection),
+    Edge(Edge),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, VariantArray)]
+#[repr(u8)]
+pub(super) enum Edge {
+    Follows,
+    Blocks,
+    Mutes,
+    MuteRetweets,
+    BlockedBy,
+    SuperFollows,
+    FollowedBy,
+        SecondDegree,
+}
+
+impl Edge {
+    pub(super) const fn flock(self) -> Option<(Graph, EdgeDirection)> {
+        use EdgeDirection::{Forward, Reverse};
+        match self {
+            Edge::Follows => Some((Graph::Follows, Forward)),
+            Edge::Blocks => Some((Graph::Blocks, Forward)),
+            Edge::Mutes => Some((Graph::Mutes, Forward)),
+            Edge::MuteRetweets => Some((Graph::MuteRetweets, Forward)),
+            Edge::BlockedBy => Some((Graph::Blocks, Reverse)),
+            Edge::SuperFollows => Some((Graph::SuperFollows, Forward)),
+            Edge::FollowedBy => Some((Graph::Follows, Reverse)),
+            Edge::SecondDegree => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,11 +87,21 @@ impl KeyOrigin {
             KeyOrigin::MyNetworkRootNotFollowingViewer => Some(Hydrator::RootFollowsViewer),
         }
     }
+
+        fn reads(self) -> Hydrators {
+        let input = match self.input() {
+            Some(input) => Hydrators::of(input),
+            None => Hydrators::empty(),
+        };
+        match self {
+            KeyOrigin::MyNetworkRootNotFollowingViewer => input.with(Hydrator::ConversationControl),
+            _ => input,
+        }
+    }
 }
 
 impl Hydrator {
     pub(super) const fn spec(self) -> NodeSpec {
-        use EdgeDirection::{Forward, Reverse};
         use Hydrator as H;
         use KeyOrigin as K;
         use Source as S;
@@ -136,49 +175,49 @@ impl Hydrator {
             ),
             H::Follows => node(
                 S::Flock,
-                Part::Edge(Graph::Follows, Forward),
+                Part::Edge(Edge::Follows),
                 K::PureCoreAuthor,
                 RELATIONSHIPS,
             ),
             H::Blocks => node(
                 S::Flock,
-                Part::Edge(Graph::Blocks, Forward),
+                Part::Edge(Edge::Blocks),
                 K::PureCoreAuthor,
                 RELATIONSHIPS,
             ),
             H::Mutes => node(
                 S::Flock,
-                Part::Edge(Graph::Mutes, Forward),
+                Part::Edge(Edge::Mutes),
                 K::PureCoreAuthor,
                 RELATIONSHIPS,
             ),
             H::MuteRetweets => node(
                 S::Flock,
-                Part::Edge(Graph::MuteRetweets, Forward),
+                Part::Edge(Edge::MuteRetweets),
                 K::PureCoreAuthor,
                 RELATIONSHIPS,
             ),
             H::BlockedByAuthor => node(
                 S::Flock,
-                Part::Edge(Graph::Blocks, Reverse),
+                Part::Edge(Edge::BlockedBy),
                 K::PureCoreAuthor,
                 BLOCKED_BY,
             ),
             H::BlockedByReplyRoot => node(
                 S::Flock,
-                Part::Edge(Graph::Blocks, Reverse),
+                Part::Edge(Edge::BlockedBy),
                 K::PureCoreReplyRoot,
                 BLOCKED_BY,
             ),
             H::SuperFollowsExclusive => node(
                 S::Flock,
-                Part::Edge(Graph::SuperFollows, Forward),
+                Part::Edge(Edge::SuperFollows),
                 K::ExclusiveConversationAuthor,
                 ("exclusive_content", "batch_check_super_follows"),
             ),
             H::RootFollowsViewer => node(
                 S::Flock,
-                Part::Edge(Graph::Follows, Reverse),
+                Part::Edge(Edge::FollowedBy),
                 K::ConversationRoot(&[
                     ConversationControlArm::Community,
                     ConversationControlArm::MyNetwork,
@@ -187,13 +226,13 @@ impl Hydrator {
             ),
             H::RootFollowsViewerSecondDegree => node(
                 S::Wingman,
-                Part::Column,
+                Part::Edge(Edge::SecondDegree),
                 K::MyNetworkRootNotFollowingViewer,
                 ("conversation_control", "exists_intersect"),
             ),
             H::SuperFollowsRoot => node(
                 S::Flock,
-                Part::Edge(Graph::SuperFollows, Forward),
+                Part::Edge(Edge::SuperFollows),
                 K::ConversationRoot(&[ConversationControlArm::Subscribers]),
                 ("conversation_control", "batch_check_super_follows"),
             ),
@@ -210,8 +249,15 @@ impl Hydrator {
         self.spec().key.input()
     }
 
+    pub(super) const fn edge(self) -> Option<Edge> {
+        match self.spec().part {
+            Part::Edge(edge) => Some(edge),
+            Part::Column | Part::Fields(_) => None,
+        }
+    }
+
             pub(crate) const fn is_edge(self) -> bool {
-        matches!(self.spec().source, Source::Flock | Source::Wingman)
+        self.edge().is_some()
     }
 
         pub(super) const fn needs_viewer(self) -> bool {
@@ -284,11 +330,15 @@ pub(crate) struct HydrationPlan {
 }
 
 pub(super) struct Group {
+    pub(super) position: usize,
     pub(super) source: Source,
     pub(super) input: Option<Hydrator>,
     pub(super) nodes: Hydrators,
     clients: Vec<&'static str>,
     methods: Vec<&'static str>,
+    edges: Vec<(Edge, Graph, EdgeDirection, Hydrators)>,
+    fields: Vec<QueryFields>,
+        readers: Vec<usize>,
 }
 
 impl HydrationPlan {
@@ -313,13 +363,41 @@ impl HydrationPlan {
                     }
                 }
                 None => groups.push(Group {
+                    position: groups.len(),
                     source: spec.source,
                     input,
                     nodes: Hydrators::of(node),
                     clients: vec![client],
                     methods: vec![method],
+                    edges: Vec::new(),
+                    fields: Vec::new(),
+                    readers: Vec::new(),
                 }),
             }
+        }
+        let reads: Vec<Hydrators> = groups
+            .iter()
+            .map(|group| {
+                group.nodes.iter().fold(Hydrators::empty(), |reads, node| {
+                    reads.union(node.spec().key.reads())
+                })
+            })
+            .collect();
+        let readers: Vec<Vec<usize>> = groups
+            .iter()
+            .map(|landed| {
+                reads
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, reads)| !reads.intersection(landed.nodes).is_empty())
+                    .map(|(position, _)| position)
+                    .collect()
+            })
+            .collect();
+        for (group, readers) in groups.iter_mut().zip(readers) {
+            group.edges = edges(group.nodes);
+            group.fields = fields(group.source, group.nodes);
+            group.readers = readers;
         }
         Self {
             level,
@@ -346,6 +424,13 @@ impl HydrationPlan {
     pub(super) fn groups(&self) -> impl Iterator<Item = &Group> {
         self.groups.iter()
     }
+
+        pub(super) fn readers<'a>(&'a self, landed: &'a Group) -> impl Iterator<Item = &'a Group> {
+        landed
+            .readers
+            .iter()
+            .filter_map(|&position| self.groups.get(position))
+    }
 }
 
 impl Group {
@@ -353,45 +438,52 @@ impl Group {
         (self.clients.join("+"), self.methods.join("+"))
     }
 
-            pub(super) fn fields(&self) -> Vec<QueryFields> {
-        let nodes = match self.source {
-            Source::GizmoduckAuthor => Hydrator::VARIANTS
-                .iter()
-                .copied()
-                .filter(|node| node.spec().source == self.source)
-                .fold(Hydrators::empty(), Hydrators::with),
-            _ => self.nodes,
-        };
-        let mut fields = Vec::new();
-        for node in nodes.iter() {
-            if let Part::Fields(node_fields) = node.spec().part {
-                for field in node_fields {
-                    if !fields.contains(field) {
-                        fields.push(*field);
-                    }
+    pub(super) fn fields(&self) -> &[QueryFields] {
+        &self.fields
+    }
+
+        pub(super) fn edges(&self) -> &[(Edge, Graph, EdgeDirection, Hydrators)] {
+        &self.edges
+    }
+}
+
+fn fields(source: Source, nodes: Hydrators) -> Vec<QueryFields> {
+    let nodes = match source {
+        Source::GizmoduckAuthor => Hydrator::VARIANTS
+            .iter()
+            .copied()
+            .filter(|node| node.spec().source == source)
+            .fold(Hydrators::empty(), Hydrators::with),
+        _ => nodes,
+    };
+    let mut fields = Vec::new();
+    for node in nodes.iter() {
+        if let Part::Fields(node_fields) = node.spec().part {
+            for field in node_fields {
+                if !fields.contains(field) {
+                    fields.push(*field);
                 }
             }
         }
-        fields
     }
+    fields
+}
 
-        pub(super) fn edges(&self) -> Vec<(Graph, EdgeDirection, Hydrators)> {
-        let mut edges: Vec<(Graph, EdgeDirection, Hydrators)> = Vec::new();
-        for node in self.nodes.iter() {
-            let spec = node.spec();
-            let Part::Edge(graph, direction) = spec.part else {
-                continue;
-            };
-            match edges
-                .iter_mut()
-                .find(|(g, d, _)| (*g, *d) == (graph, direction))
-            {
-                Some((_, _, nodes)) => *nodes = nodes.with(node),
-                None => edges.push((graph, direction, Hydrators::of(node))),
-            }
+fn edges(nodes: Hydrators) -> Vec<(Edge, Graph, EdgeDirection, Hydrators)> {
+    let mut edges: Vec<(Edge, Graph, EdgeDirection, Hydrators)> = Vec::new();
+    for node in nodes.iter() {
+        let Some(edge) = node.edge() else {
+            continue;
+        };
+        let Some((graph, direction)) = edge.flock() else {
+            continue;
+        };
+        match edges.iter_mut().find(|(queried, ..)| *queried == edge) {
+            Some((.., nodes)) => *nodes = nodes.with(node),
+            None => edges.push((edge, graph, direction, Hydrators::of(node))),
         }
-        edges
     }
+    edges
 }
 
 impl fmt::Display for KeyOrigin {
@@ -436,7 +528,7 @@ impl fmt::Display for HydrationPlan {
                 let fields: Vec<String> = fields.iter().map(|field| format!("{field:?}")).collect();
                 write!(f, " fields: {}", fields.join("|"))?;
             }
-            for (graph, direction, nodes) in group.edges() {
+            for &(_, graph, direction, nodes) in group.edges() {
                 let direction = match direction {
                     EdgeDirection::Forward => "fwd",
                     EdgeDirection::Reverse => "rev",

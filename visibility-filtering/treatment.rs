@@ -10,6 +10,12 @@ use xai_x_thrift::action::{
     ComposedMediaVisibilityActions, Interstitial, InterstitialAction, InterstitialReason,
     LimitedEngagements, MediaInterstitial as ThriftMediaInterstitial, Tombstone, TweetInterstitial,
 };
+use xai_x_thrift::safety_result::{
+    FilteredReason as ThriftFilteredReason, SafetyResult as ThriftSafetyResult,
+};
+use xai_x_thrift::tweet_service::{
+    TweetFieldsResultFiltered, TweetFieldsResultFound, TweetFieldsResultState,
+};
 
 pub(crate) fn thrift_action(verdict: &Verdict, level: SafetyLevel) -> Action {
     match verdict {
@@ -57,6 +63,49 @@ pub(crate) fn thrift_action(verdict: &Verdict, level: SafetyLevel) -> Action {
             })
         }
     }
+}
+
+pub(crate) fn thrift_result_state(verdict: &Verdict, level: SafetyLevel) -> TweetFieldsResultState {
+    let safety_result = || {
+        ThriftFilteredReason::SafetyResult(ThriftSafetyResult::new(
+            None,
+            thrift_action(verdict, level),
+        ))
+    };
+    let found = |reason| TweetFieldsResultState::Found(TweetFieldsResultFound::new(reason));
+    let filtered =
+        |reason| TweetFieldsResultState::Filtered(TweetFieldsResultFiltered::new(reason));
+    match verdict {
+        Verdict::Withheld(Decided {
+            value: Withholding::Drop(DropReason::Legacy(reason)),
+            ..
+        }) => filtered(legacy_drop_reason(reason).unwrap_or_else(safety_result)),
+        Verdict::Withheld(_) => filtered(safety_result()),
+        Verdict::Shown {
+            media: None,
+            engagement: None,
+        } => found(None),
+        Verdict::Shown {
+            media:
+                Some(Decided {
+                    value: MediaRestriction::NsfwInterstitial,
+                    ..
+                }),
+            engagement: None,
+        } => found(Some(ThriftFilteredReason::ContainNsfwMedia(true))),
+        Verdict::Shown { .. } => found(Some(safety_result())),
+    }
+}
+
+fn legacy_drop_reason(reason: &FilteredReason) -> Option<ThriftFilteredReason> {
+    use ThriftFilteredReason as T;
+    Some(match reason {
+        FilteredReason::TweetIsBounced => T::TweetIsBounced(true),
+        FilteredReason::AuthorBlockViewer => T::AuthorBlockViewer(true),
+        FilteredReason::AuthorIsProtected => T::AuthorIsProtected(true),
+        FilteredReason::AuthorIsSuspended => T::AuthorIsSuspended(true),
+        _ => return None,
+    })
 }
 
 fn nsfw_interstitial() -> Interstitial {
@@ -561,6 +610,76 @@ mod tests {
             assert_eq!(
                 thrift_action(&verdict, TimelineHome),
                 thrift_drop(None),
+                "{verdict:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn thrift_result_state_uses_a_legacy_arm_only_where_it_renders_differently() {
+        use ThriftFilteredReason as T;
+        let found = |reason| TweetFieldsResultState::Found(TweetFieldsResultFound::new(reason));
+        let filtered =
+            |reason| TweetFieldsResultState::Filtered(TweetFieldsResultFiltered::new(reason));
+        let safety_result = |verdict: &Verdict| {
+            T::SafetyResult(ThriftSafetyResult::new(
+                None,
+                thrift_action(verdict, TimelineHome),
+            ))
+        };
+        let shown = |media, engagement| Verdict::Shown { media, engagement };
+        let limited = Decided {
+            value: LimitedEngagement(LimitedEngagementReason::ConversationControl),
+            by: "limit_rule",
+        };
+        let nsfw = Decided {
+            value: MediaRestriction::NsfwInterstitial,
+            by: "nsfw_rule",
+        };
+        let mut cases = vec![
+            (
+                dropped(FilteredReason::TweetIsBounced),
+                filtered(T::TweetIsBounced(true)),
+            ),
+            (
+                dropped(FilteredReason::AuthorBlockViewer),
+                filtered(T::AuthorBlockViewer(true)),
+            ),
+            (
+                dropped(FilteredReason::AuthorIsProtected),
+                filtered(T::AuthorIsProtected(true)),
+            ),
+            (
+                dropped(FilteredReason::AuthorIsSuspended),
+                filtered(T::AuthorIsSuspended(true)),
+            ),
+            (shown(None, None), found(None)),
+            (
+                shown(Some(nsfw.clone()), None),
+                found(Some(T::ContainNsfwMedia(true))),
+            ),
+        ];
+        for verdict in [
+            dropped(FilteredReason::AuthorIsDeactivated),
+            dropped(FilteredReason::ExclusiveTweet),
+            Verdict::Withheld(Decided {
+                value: Withholding::Drop(DropReason::NsfwViewer(NsfwViewerDropReason::IsUnderage)),
+                by: "rule",
+            }),
+            tombstoned(TombstoneReason::LocalRegulations),
+        ] {
+            cases.push((verdict.clone(), filtered(safety_result(&verdict))));
+        }
+        for verdict in [
+            shown(None, Some(limited.clone())),
+            shown(Some(nsfw), Some(limited)),
+        ] {
+            cases.push((verdict.clone(), found(Some(safety_result(&verdict)))));
+        }
+        for (verdict, expected) in cases {
+            assert_eq!(
+                thrift_result_state(&verdict, TimelineHome),
+                expected,
                 "{verdict:?}"
             );
         }
