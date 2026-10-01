@@ -76,6 +76,7 @@ mod tests {
     use super::*;
     use crate::filter::FilterTweets;
     use crate::hydration::sources::InMemorySources;
+    use crate::limited_actions_copy::LimitedActionsCopy;
     use crate::params::ClientSwitches;
     use crate::rules::RuleEngine;
     use crate::safety_label_source::lookup::{ManhattanLookup, RemoteSource, TwemcacheLookup};
@@ -113,7 +114,11 @@ mod tests {
         ));
         let labels = Arc::new(NoLabels);
         VFServer::from_endpoints(
-            EvaluateTweetsEndpoint::new(filter_tweets.clone(), ClientSwitches::for_tests()),
+            EvaluateTweetsEndpoint::new(
+                filter_tweets.clone(),
+                ClientSwitches::for_tests(),
+                LimitedActionsCopy::from_json("[]"),
+            ),
             FilterTweetsEndpoint::new(filter_tweets, None),
             GetSafetyLabelsEndpoint::new(Arc::new(SafetyLabelSource::new(Arc::new(
                 RemoteSource::new(labels.clone(), labels),

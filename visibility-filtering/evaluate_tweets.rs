@@ -1,7 +1,9 @@
+use crate::caller_identity::{self, Endpoint};
 use crate::filter::{EvaluationStatus, FilterOutcome, FilterRequest, FilterTweets};
 use crate::filter_tweets::normalize_viewer_id;
+use crate::limited_actions_copy::LimitedActionsCopy;
 use crate::models::{RawCandidate, TweetId, Verdict};
-use crate::params::ClientSwitches;
+use crate::params::{ClientSwitches, LimitedActionsPolicies};
 use crate::retweet;
 use crate::rules::metrics::{self as ft_metrics, RequestMetricsGuard, Rpc};
 use crate::rules::SafetyLevel;
@@ -21,13 +23,19 @@ const BATCH_SIZE: &str = "evaluate_tweets_batch_size";
 pub struct EvaluateTweetsEndpoint {
     filter_tweets: Arc<FilterTweets>,
     client_switches: ClientSwitches,
+    limited_actions_copy: LimitedActionsCopy,
 }
 
 impl EvaluateTweetsEndpoint {
-    pub(crate) fn new(filter_tweets: Arc<FilterTweets>, client_switches: ClientSwitches) -> Self {
+    pub(crate) fn new(
+        filter_tweets: Arc<FilterTweets>,
+        client_switches: ClientSwitches,
+        limited_actions_copy: LimitedActionsCopy,
+    ) -> Self {
         Self {
             filter_tweets,
             client_switches,
+            limited_actions_copy,
         }
     }
 
@@ -37,6 +45,7 @@ impl EvaluateTweetsEndpoint {
     ) -> Result<Response<vf_pb::EvaluateTweetsResponse>, Status> {
         let entered = tokio::time::Instant::now();
         let request_metrics = RequestMetricsGuard::named(REQUESTS, LATENCY_MS);
+        caller_identity::record(Endpoint::EvaluateTweets, &request);
         let context = crate::hydration::request_context(
             entered,
             crate::filter_tweets::parse_grpc_timeout(request.metadata()),
@@ -93,7 +102,7 @@ impl EvaluateTweetsEndpoint {
             &self.filter_tweets,
             FilterRequest {
                 viewer_id,
-                country_code: req.country_code,
+                country_code: req.country_code.clone(),
                 client_capability,
                 safety_level,
                 candidates,
@@ -111,6 +120,23 @@ impl EvaluateTweetsEndpoint {
             safety_level,
             outcomes.iter().map(|outcome| outcome.rested_on),
         );
+        let policies = self.client_switches.limited_actions_policies(
+            twitter_context.as_ref(),
+            viewer_id,
+            req.country_code.as_deref(),
+            outcomes
+                .iter()
+                .filter_map(|outcome| match &outcome.verdict {
+                    Verdict::Shown {
+                        engagement: Some(limit),
+                        ..
+                    } => Some(limit.value.reasons()),
+                    Verdict::Shown { .. } | Verdict::Withheld(_) => None,
+                })
+                .flatten(),
+            &self.limited_actions_copy,
+            xai_stats_receiver::global_stats_receiver().as_deref(),
+        );
         let outcomes: HashMap<TweetId, FilterOutcome> = outcomes
             .into_iter()
             .map(|outcome| (outcome.tweet_id, outcome))
@@ -127,7 +153,7 @@ impl EvaluateTweetsEndpoint {
                             status: EvaluationStatus::Evaluated,
                             verdict,
                             ..
-                        }) => evaluated_outcome(verdict, safety_level),
+                        }) => evaluated_outcome(verdict, safety_level, &policies),
                         _ => Outcome::Failed(vf_pb::Failed {}),
                     }
                 };
@@ -140,8 +166,13 @@ impl EvaluateTweetsEndpoint {
     }
 }
 
-fn evaluated_outcome(verdict: &Verdict, level: SafetyLevel) -> Outcome {
-    match xai_x_thrift::serialize_compact(&treatment::thrift_result_state(verdict, level)) {
+fn evaluated_outcome(
+    verdict: &Verdict,
+    level: SafetyLevel,
+    policies: &LimitedActionsPolicies,
+) -> Outcome {
+    let state = treatment::thrift_result_state(verdict, level, policies);
+    match xai_x_thrift::serialize_compact(&state) {
         Ok(bytes) => Outcome::ResultStateThriftCompact(bytes.into()),
         Err(_) => Outcome::Failed(vf_pb::Failed {}),
     }
@@ -204,6 +235,7 @@ mod tests {
         let endpoint = EvaluateTweetsEndpoint::new(
             Arc::new(FilterTweets::new(sources.clone(), RuleEngine::for_tests())),
             ClientSwitches::for_tests(),
+            LimitedActionsCopy::from_json("[]"),
         );
         for (level, code) in [
             (0, tonic::Code::Unimplemented),
@@ -304,6 +336,87 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_conversation_control_limit_carries_its_prompt_in_the_request_language() {
+        use crate::limited_actions_copy::tests::BUNDLE;
+        use crate::models::LimitedEngagementReason::ConversationControl;
+        use crate::models::{Decided, LimitedEngagement, MediaRestriction};
+        use crate::rules::fixtures::limited;
+        use xai_x_thrift::action::{
+            AnyInterstitial, CtaLimitedActionPrompt, Interstitial, InterstitialReason,
+            LimitedAction, LimitedActionCtaType, LimitedActionPrompt, LimitedActionsPolicy,
+            LimitedEngagements, TweetInterstitial,
+        };
+        let copy = LimitedActionsCopy::from_json(BUNDLE);
+        let limit = limited(ConversationControl, "rule");
+        let composite = Verdict::Shown {
+            media: Some(Decided {
+                value: MediaRestriction::NsfwInterstitial,
+                by: "nsfw_rule",
+            }),
+            engagement: Some(Decided {
+                value: LimitedEngagement::new(ConversationControl),
+                by: "rule",
+            }),
+        };
+        for (language, subtext) in [
+            ("", "Only some accounts can reply."),
+            ("ja", "一部のアカウントのみが返信できます。"),
+        ] {
+            let context = TwitterContextViewer {
+                request_language_code: language.to_string(),
+                ..TwitterContextViewer::default()
+            };
+            let policies = ClientSwitches::for_tests().limited_actions_policies(
+                Some(&context),
+                None,
+                None,
+                [ConversationControl],
+                &copy,
+                None,
+            );
+            let thrift_limit = LimitedEngagements::new(
+                action::LimitedEngagementReason::ConversationControl(
+                    action::ConversationControl::new(),
+                ),
+                LimitedActionsPolicy::new(vec![LimitedAction::new(
+                    action::LimitedActionType::REPLY,
+                    LimitedActionPrompt::CtaLimitedActionPrompt(CtaLimitedActionPrompt::new(
+                        "Who can reply?".to_string(),
+                        subtext.to_string(),
+                        LimitedActionCtaType::SEE_CONVERSATION,
+                    )),
+                )]),
+                "limited_replies".to_string(),
+            );
+            let found = |action| {
+                encoded(TweetFieldsResultState::Found(TweetFieldsResultFound::new(
+                    ThriftFilteredReason::SafetyResult(SafetyResult::new(None, action)),
+                )))
+            };
+            for (verdict, action) in [
+                (&limit, Action::LimitedEngagements(thrift_limit.clone())),
+                (
+                    &composite,
+                    Action::TweetInterstitial(TweetInterstitial {
+                        interstitial: Some(AnyInterstitial::Interstitial(Interstitial::new(
+                            InterstitialReason::ContainsNsfwMedia(true),
+                            None,
+                        ))),
+                        limited_engagements: Some(thrift_limit.clone()),
+                        ..TweetInterstitial::default()
+                    }),
+                ),
+            ] {
+                assert_eq!(
+                    evaluated_outcome(verdict, SafetyLevel::TimelineHomeHydration, &policies),
+                    found(action),
+                    "{language:?} {verdict:?}"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn the_forwarded_client_reaches_the_fetched_source_and_no_header_gets_the_defaults() {
         use crate::models::ClientCapability;
@@ -321,8 +434,11 @@ mod tests {
                 .tweet(6, 60),
         );
         let filter_tweets = Arc::new(FilterTweets::new(sources, RuleEngine::for_tests()));
-        let endpoint =
-            EvaluateTweetsEndpoint::new(Arc::clone(&filter_tweets), ClientSwitches::for_tests());
+        let endpoint = EvaluateTweetsEndpoint::new(
+            Arc::clone(&filter_tweets),
+            ClientSwitches::for_tests(),
+            LimitedActionsCopy::from_json("[]"),
+        );
         let class = CLIENT_CLASSES
             .iter()
             .find(|class| {

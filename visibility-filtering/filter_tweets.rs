@@ -1,3 +1,4 @@
+use crate::caller_identity::{self, Endpoint};
 use crate::filter::{FilterOutcome, FilterRequest, FilterTweets};
 use crate::models::{ClientCapability, RawCandidate, TweetId};
 use crate::reference::ReferenceComparator;
@@ -33,6 +34,7 @@ impl FilterTweetsEndpoint {
         let entered = tokio::time::Instant::now();
         let request_metrics = RequestMetricsGuard::new();
         let grpc_timeout = parse_grpc_timeout(request.metadata());
+        caller_identity::record(Endpoint::FilterTweets, &request);
         let context = crate::hydration::request_context(entered, grpc_timeout);
         let req = request.into_inner();
         ft_metrics::record_batch_size(ft_metrics::BATCH_SIZE, req.tweets.len());

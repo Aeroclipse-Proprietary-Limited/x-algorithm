@@ -98,16 +98,23 @@ impl Policy {
                         });
                     }
                 }
-                ActionSpec::LimitedEngagement(reason) if engagement.is_none() => {
-                    slot_rested_on = slot_rested_on.union(unknown_reads);
+                ActionSpec::LimitedEngagement(reason) => {
+                    if engagement.is_none() {
+                        slot_rested_on = slot_rested_on.union(unknown_reads);
+                    }
                     if truth.resolves_true() {
-                        engagement = Some(Decided {
-                            value: LimitedEngagement(*reason),
-                            by,
-                        });
+                        match &mut engagement {
+                            None => {
+                                engagement = Some(Decided {
+                                    value: LimitedEngagement::new(*reason),
+                                    by,
+                                });
+                            }
+                            Some(limit) => limit.value.add(*reason),
+                        }
                     }
                 }
-                ActionSpec::MediaRestriction(_) | ActionSpec::LimitedEngagement(_) => {}
+                ActionSpec::MediaRestriction(_) => {}
             }
         }
 
@@ -508,6 +515,7 @@ country_specific_nsfw_content_gating:
             "do_not_amplify/drop/undesirable",
             "malicious_url/drop/undesirable",
             "spam_high_recall/drop/undesirable",
+            "brazil_election_legal/drop/undesirable",
             "fosnr_abuse_insults/drop/undesirable",
             "nsfw_high_recall_user_label/drop/unspecified",
             "nsfw_high_precision_user_label/drop/unspecified",
@@ -642,6 +650,7 @@ country_specific_nsfw_content_gating:
                 "do_not_amplify/drop/undesirable",
                 "malicious_url/drop/undesirable",
                 "spam_high_recall/drop/undesirable",
+                "brazil_election_legal/drop/undesirable",
                 "spam_high_recall_user_label/drop/unspecified",
                 "compromised_user_label/drop/unspecified",
                 "read_only_user_label/drop/unspecified",
@@ -763,7 +772,11 @@ country_specific_nsfw_content_gating:
                 always("first_interstitial", INTERSTITIAL_NSFW),
                 always("first_limit", LIMIT),
                 always("second_interstitial", INTERSTITIAL_UNSPECIFIED),
-                always("second_limit", LIMIT),
+                always(
+                    "second_limit",
+                    ActionSpec::LimitedEngagement(LimitedEngagementReason::BlockedViewer),
+                ),
+                always("third_limit", LIMIT),
             ])
         }
 
@@ -825,29 +838,37 @@ country_specific_nsfw_content_gating:
         }
 
         #[test]
-        fn each_slot_keeps_its_first_restriction() {
+        fn the_media_slot_keeps_its_first_value_and_the_engagement_slot_each_reason_once() {
             let (viewer, candidate) = context_inputs();
 
-            let verdict = restrictions()
+            let Verdict::Shown {
+                media,
+                engagement: Some(limit),
+            } = restrictions()
                 .evaluate(&test_context(&viewer, &candidate))
-                .verdict;
+                .verdict
+            else {
+                panic!("expected a limited verdict");
+            };
 
             assert_eq!(
-                verdict,
-                Verdict::Shown {
-                    media: Some(Decided {
-                        value: MediaRestriction::MediaInterstitial(MediaInterstitial {
-                            legacy: FilteredReason::ContainNsfwMedia,
-                            reason: InterstitialReason::Sensitive(true),
-                            prompt: None,
-                        }),
-                        by: "first_interstitial",
+                media,
+                Some(Decided {
+                    value: MediaRestriction::MediaInterstitial(MediaInterstitial {
+                        legacy: FilteredReason::ContainNsfwMedia,
+                        reason: InterstitialReason::Sensitive(true),
+                        prompt: None,
                     }),
-                    engagement: Some(Decided {
-                        value: LimitedEngagement(LimitedEngagementReason::ConversationControl),
-                        by: "first_limit",
-                    }),
-                }
+                    by: "first_interstitial",
+                })
+            );
+            assert_eq!(limit.by, "first_limit");
+            assert_eq!(
+                limit.value.reasons().collect::<Vec<_>>(),
+                [
+                    LimitedEngagementReason::ConversationControl,
+                    LimitedEngagementReason::BlockedViewer,
+                ]
             );
         }
 

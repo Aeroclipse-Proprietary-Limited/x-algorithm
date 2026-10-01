@@ -182,12 +182,18 @@ pub(crate) fn legacy_interstitial(by: &'static str) -> Verdict {
 }
 
 pub(crate) fn limited(reason: LimitedEngagementReason, by: &'static str) -> Verdict {
+    limited_for(&[reason], by)
+}
+
+pub(crate) fn limited_for(reasons: &[LimitedEngagementReason], by: &'static str) -> Verdict {
+    let (&first, rest) = reasons.split_first().unwrap();
+    let mut value = LimitedEngagement::new(first);
+    for &reason in rest {
+        value.add(reason);
+    }
     Verdict::Shown {
         media: None,
-        engagement: Some(Decided {
-            value: LimitedEngagement(reason),
-            by,
-        }),
+        engagement: Some(Decided { value, by }),
     }
 }
 

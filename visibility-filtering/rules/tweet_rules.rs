@@ -567,6 +567,16 @@ pub(super) fn oon_low_quality_tweet_label_drops() -> Vec<RuleClause> {
         label_drop(RuleId::DoNotAmplify, L::DO_NOT_AMPLIFY, undesirable.clone()),
         label_drop(RuleId::MaliciousUrl, L::MALICIOUS_URL, undesirable.clone()),
         label_drop(RuleId::SpamHighRecall, L::SPAM_HIGH_RECALL, undesirable),
+        rule(
+            RuleId::BrazilElectionLegal,
+            except_author(
+                [
+                    label(L::BRAZIL_ELECTION_LEGAL),
+                    viewer(ViewerPredicate::RequestCountryIs("br")),
+                ],
+                drop_post(FilteredReason::PossiblyUndesirable),
+            ),
+        ),
     ]
     .concat()
 }

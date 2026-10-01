@@ -144,6 +144,13 @@ lazy_static! {
             &["entity_type"])  
             .unwrap();
 
+                        pub static ref CONFIG_RESTART_PENDING: IntGaugeVec =
+        register_int_gauge_vec!(
+            "abuse_enforcement_config_restart_pending",
+            "1 while a restart-requiring config change is pending, by whether it validates.",
+            &["valid"])  
+            .unwrap();
+
                                                 pub static ref LIMITER_COUNTER_RESET_TOTAL: IntCounterVec =
         register_int_counter_vec!(
             "abuse_enforcement_limiter_counter_reset_total",
@@ -336,6 +343,7 @@ pub fn init() {
     let _ = &*RETRY_QUEUE_SIZE;
     let _ = &*LIMITER_DECISIONS_TOTAL;
     let _ = &*RATE_LIMIT_REMAINING;
+    let _ = &*CONFIG_RESTART_PENDING;
     let _ = &*LIMITER_COUNTER_RESET_TOTAL;
     let _ = &*MANHATTAN_ERRORS_TOTAL;
     let _ = &*KAFKA_SELF_DELETE_TOTAL;

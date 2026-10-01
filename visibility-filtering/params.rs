@@ -1,5 +1,7 @@
 mod client_switches;
+mod limited_actions_policy;
 
+use crate::limited_actions_copy::DriftCheck;
 use arc_swap::ArcSwap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,6 +11,7 @@ use xai_feature_switches::{Feature, FeatureSwitches, RecipientBuilder, Value};
 use xai_stats_receiver::StatsReceiverExt;
 
 pub(crate) use client_switches::ClientSwitches;
+pub(crate) use limited_actions_policy::{LimitedActionType, LimitedActionsPolicies};
 
 const SCALA_FILES: [&str; 5] = [
     "age_verification.yml",
@@ -17,6 +20,9 @@ const SCALA_FILES: [&str; 5] = [
     "media_visibility_treatments.yml",
     "stale_tweet.yml",
 ];
+
+const LIMITED_ACTIONS_POLICY_FILE: &str =
+    "../../visibility-limited-actions/main/limited_actions_policy.yml";
 
 const LOAD_FAILURE_COUNTER: &str = "feature_switch_load_failures";
 
@@ -103,6 +109,7 @@ impl SwitchFiles {
         let dir = fs_path.parent().unwrap_or_else(|| Path::new(""));
         let files = std::iter::once(fs_path.to_path_buf())
             .chain(SCALA_FILES.iter().map(|name| dir.join(name)))
+            .chain(std::iter::once(dir.join(LIMITED_ACTIONS_POLICY_FILE)))
             .map(|path| (path, Vec::new()))
             .collect();
         Self { files }
@@ -154,6 +161,7 @@ pub(crate) fn spawn_refresh(
     mut files: SwitchFiles,
     feature_switches: Arc<ArcSwap<FeatureSwitches>>,
     country_lists: Arc<CountryLists>,
+    copy_drift: DriftCheck,
     stats: Option<Arc<dyn StatsReceiverExt>>,
 ) {
     tokio::spawn(async move {
@@ -164,6 +172,7 @@ pub(crate) fn spawn_refresh(
                 feature_switches.store(Arc::new(engine));
             }
             country_lists.refresh(&feature_switches.load());
+            copy_drift.run(stats.as_deref());
         }
     });
 }
@@ -205,17 +214,19 @@ mod tests {
     use xai_stats_receiver::HistogramBuckets;
 
     #[derive(Default)]
-    struct Counted(Mutex<Vec<(String, String, u64)>>);
+    pub(super) struct Counted(Mutex<Vec<(String, String, u64)>>);
 
     impl StatsReceiverExt for Counted {
         fn incr(&self, name: &str, scopes: &[(&str, &str)], value: u64) {
-            let [(label, tag)] = scopes else {
-                panic!("tagged once: {scopes:?}")
-            };
+            let labels = scopes
+                .iter()
+                .map(|(label, tag)| format!("{label}={tag}"))
+                .collect::<Vec<_>>()
+                .join(",");
             self.0
                 .lock()
                 .unwrap()
-                .push((name.to_string(), format!("{label}={tag}"), value));
+                .push((name.to_string(), labels, value));
         }
         fn observe(&self, _: &str, _: &[(&str, &str)], _: f64, _: HistogramBuckets) {}
         fn observe_expo(&self, _: &str, _: &[(&str, &str)], _: f64) {}
@@ -224,7 +235,7 @@ mod tests {
     }
 
     impl Counted {
-        fn take(&self) -> Vec<(String, String, u64)> {
+        pub(super) fn take(&self) -> Vec<(String, String, u64)> {
             std::mem::take(&mut self.0.lock().unwrap())
         }
     }
@@ -311,15 +322,19 @@ country_specific_nsfw_content_gating:
       type: array
       default: ["us"]
 "#;
-        let dir = tempfile::tempdir().unwrap();
-        let write = |name: &str, yaml: &str| std::fs::write(dir.path().join(name), yaml).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("visibility/main");
+        let policy_dir = root.path().join("visibility-limited-actions/main");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&policy_dir).unwrap();
+        let write = |name: &str, yaml: &str| std::fs::write(dir.join(name), yaml).unwrap();
         write("age_verification.yml", AGE_VERIFICATION);
         write("country_specific_nsfw_content_gating.yml", COUNTRIES);
         write(
             "other.yml",
             "other:\n  parameters:\n    other_flag: {type: boolean, default: true}\n",
         );
-        let fs_path = dir.path().join("rust_vf.yml");
+        let fs_path = dir.join("rust_vf.yml");
         let mut files = SwitchFiles::beside(fs_path.to_str().unwrap());
         let stats = Counted::default();
         let ios_tombstone = |engine: &FeatureSwitches| {
@@ -341,6 +356,7 @@ country_specific_nsfw_content_gating:
                 failed("freedom_of_speech_not_reach.yml"),
                 failed("media_visibility_treatments.yml"),
                 failed("stale_tweet.yml"),
+                failed("limited_actions_policy.yml"),
             ]
         );
 
@@ -354,6 +370,11 @@ country_specific_nsfw_content_gating:
             "freedom_of_speech_not_reach.yml",
             "freedom_of_speech_not_reach:\n  parameters: {}\n",
         );
+        std::fs::write(
+            policy_dir.join("limited_actions_policy.yml"),
+            "limited_actions_policy:\n  parameters: {}\n",
+        )
+        .unwrap();
         for (broken, code) in [
             (
                 "age_verification:\n  parameters: {}\n  rules:\n  - query: \"([user_id in 1]\"\n    values: {}\n",

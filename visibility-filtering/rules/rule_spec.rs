@@ -73,6 +73,7 @@ pub(super) enum RuleId {
     DoNotAmplify,
     MaliciousUrl,
     SpamHighRecall,
+    BrazilElectionLegal,
 
     NsfwHighRecallUserLabel,
     NsfwHighPrecisionUserLabel,
@@ -322,6 +323,7 @@ pub(super) enum ViewerPredicate {
     NoStatedAge,
     AllowsSensitiveMedia,
     RequestCountryIn(CountryList),
+    RequestCountryIs(&'static str),
     AccountOrRequestCountryIn(CountryList),
     AgeVerified,
     ClientVerifyBlurSupportIs(VerifyBlurSupport),
@@ -695,6 +697,7 @@ predicates! {
                 .request_country()
                 .is_some_and(|country| facts.in_country_list(list, country))
         },
+        RequestCountryIs(country) reads () => |facts, ()| facts.request_country() == Some(country),
         AccountOrRequestCountryIn(list) reads ViewerProfile => |facts, profile| {
             profile
                 .and_then(|profile| profile.account_country_code.as_deref())

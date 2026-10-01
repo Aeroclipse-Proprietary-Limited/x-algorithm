@@ -266,7 +266,7 @@ mod tests {
 
     fn limit_by(rule: &'static str) -> Decided<LimitedEngagement> {
         Decided {
-            value: LimitedEngagement(LimitedEngagementReason::ConversationControl),
+            value: LimitedEngagement::new(LimitedEngagementReason::ConversationControl),
             by: rule,
         }
     }

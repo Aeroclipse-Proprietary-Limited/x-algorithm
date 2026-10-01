@@ -5,7 +5,7 @@ use crate::config::ENV_IMAGE;
 use crate::filter::{EvaluationStatus, FilterOutcome, FilterRequest, FilterTweets};
 use crate::hydration::{HYDRATION_TIMEOUT, request_context};
 use crate::models::{RawCandidate, TweetId, Verdict};
-use crate::params::ClientSwitches;
+use crate::params::{ClientSwitches, LimitedActionsPolicies};
 use crate::reference_compare::resolve_build_sha;
 use crate::retweet;
 use crate::rules::SafetyLevel;
@@ -513,6 +513,7 @@ fn vf_label(outcome: &FilterOutcome) -> Label {
     tp_label(&treatment::thrift_result_state(
         &outcome.verdict,
         SAFETY_LEVEL,
+        &LimitedActionsPolicies::default(),
     ))
 }
 

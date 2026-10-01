@@ -212,7 +212,7 @@ mod tests {
         let limited = Verdict::Shown {
             media: None,
             engagement: Some(Decided {
-                value: LimitedEngagement(LimitedEngagementReason::ConversationControl),
+                value: LimitedEngagement::new(LimitedEngagementReason::ConversationControl),
                 by: "limit_replies_by_invitation/limited_engagement/conversation_control",
             }),
         };

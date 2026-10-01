@@ -1,8 +1,12 @@
-use crate::models::{ClientCapability, VerifyBlurSupport};
+use super::limited_actions_policy::REASON_FIELD;
+use super::LimitedActionsPolicies;
+use crate::limited_actions_copy::LimitedActionsCopy;
+use crate::models::{ClientCapability, LimitedEngagementReason, VerifyBlurSupport};
 use arc_swap::ArcSwap;
 use std::sync::Arc;
 use strum::VariantArray;
 use xai_feature_switches::{FeatureSwitches, RecipientBuilder, Version};
+use xai_stats_receiver::StatsReceiverExt;
 use xai_twittercontext_proto::TwitterContextViewer;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,8 +65,14 @@ impl ClientSwitches {
     pub(crate) fn for_tests() -> Self {
         const SCALA_RULES_COPY: &str =
             include_str!("../../tests/fixtures/scala_client_switches.yml");
+        const SCALA_POLICY_COPY: &str =
+            include_str!("../../tests/fixtures/limited_actions_policy.yml");
+        let features = [SCALA_RULES_COPY, SCALA_POLICY_COPY]
+            .into_iter()
+            .flat_map(|yaml| xai_feature_switches::load_yaml_string(yaml).unwrap())
+            .collect();
         Self::new(Arc::new(ArcSwap::from_pointee(
-            FeatureSwitches::load_string(SCALA_RULES_COPY).unwrap(),
+            FeatureSwitches::new(features).unwrap(),
         )))
     }
 
@@ -72,22 +82,13 @@ impl ClientSwitches {
         viewer_id: Option<u64>,
         country_code: Option<&str>,
     ) -> ClientCapability {
-        let Some(context) = context else {
+        if context.is_none() {
             return ClientCapability::default();
-        };
-        let mut recipient = RecipientBuilder::new()
-            .opt_country(country_code)
-            .client_version_opt(client_version(&context.user_agent).map(|v| v.to_string()));
-        if let Some(viewer_id) = viewer_id {
-            recipient = recipient.user_id(viewer_id);
-        }
-        if context.client_application_id != 0 {
-            recipient = recipient.client_app_id(context.client_application_id);
         }
         let results = self
             .feature_switches
             .load()
-            .match_recipient(&recipient.build());
+            .match_recipient(&recipient(context, viewer_id, country_code).build());
         let on = |switch: ClientSwitch| {
             results
                 .get_bool_no_impression(switch.key())
@@ -102,6 +103,55 @@ impl ClientSwitches {
             fosnr_fallback_drops: on(ClientSwitch::FosnrFallbackDrops),
         }
     }
+
+    pub fn limited_actions_policies(
+        &self,
+        context: Option<&TwitterContextViewer>,
+        viewer_id: Option<u64>,
+        country_code: Option<&str>,
+        reasons: impl IntoIterator<Item = LimitedEngagementReason>,
+        copy: &LimitedActionsCopy,
+        stats: Option<&dyn StatsReceiverExt>,
+    ) -> LimitedActionsPolicies {
+        let feature_switches = self.feature_switches.load();
+        let language = context
+            .map(|context| context.request_language_code.as_str())
+            .filter(|language| !language.is_empty());
+        LimitedActionsPolicies::resolve(
+            reasons,
+            |reason| {
+                feature_switches.match_recipient(
+                    &recipient(context, viewer_id, country_code)
+                        .opt_language(language)
+                        .custom_string(REASON_FIELD, reason.limited_actions_string())
+                        .build(),
+                )
+            },
+            |action_type, prompt_copy| {
+                copy.prompt(action_type, prompt_copy, language, country_code)
+            },
+            stats,
+        )
+    }
+}
+
+fn recipient(
+    context: Option<&TwitterContextViewer>,
+    viewer_id: Option<u64>,
+    country_code: Option<&str>,
+) -> RecipientBuilder {
+    let mut recipient = RecipientBuilder::new().opt_country(country_code);
+    if let Some(viewer_id) = viewer_id {
+        recipient = recipient.user_id(viewer_id);
+    }
+    if let Some(context) = context {
+        recipient = recipient
+            .client_version_opt(client_version(&context.user_agent).map(|v| v.to_string()));
+        if context.client_application_id != 0 {
+            recipient = recipient.client_app_id(context.client_application_id);
+        }
+    }
+    recipient
 }
 
 fn verify_blur_support(on: impl Fn(ClientSwitch) -> bool) -> Option<VerifyBlurSupport> {

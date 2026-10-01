@@ -67,8 +67,34 @@ pub struct MediaInterstitial {
     pub prompt: Option<InterstitialAction>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LimitedEngagement(pub LimitedEngagementReason);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LimitedEngagement {
+    first: LimitedEngagementReason,
+    rest: Vec<LimitedEngagementReason>,
+}
+
+impl LimitedEngagement {
+    pub fn new(reason: LimitedEngagementReason) -> Self {
+        Self {
+            first: reason,
+            rest: Vec::new(),
+        }
+    }
+
+    pub fn add(&mut self, reason: LimitedEngagementReason) {
+        if !self.reasons().any(|held| held == reason) {
+            self.rest.push(reason);
+        }
+    }
+
+    pub fn reason(&self) -> LimitedEngagementReason {
+        self.first
+    }
+
+    pub fn reasons(&self) -> impl Iterator<Item = LimitedEngagementReason> + '_ {
+        std::iter::once(self.first).chain(self.rest.iter().copied())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
@@ -87,6 +113,18 @@ pub enum LimitedEngagementReason {
     BlockedViewer,
     RootAuthorBlockedViewer,
     StaleTweet,
+}
+
+impl LimitedEngagementReason {
+    pub const fn limited_actions_string(self) -> &'static str {
+        match self {
+            Self::ConversationControl => "limited_replies",
+            Self::ReadonlyViewer => "readonly_viewer",
+            Self::BlockedViewer => "blocked_viewer",
+            Self::RootAuthorBlockedViewer => "root_author_blocked_viewer",
+            Self::StaleTweet => "stale_tweet",
+        }
+    }
 }
 
 impl Verdict {

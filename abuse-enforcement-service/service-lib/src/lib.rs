@@ -18,6 +18,7 @@ pub mod limiter;
 pub mod manhattan;
 pub mod metrics;
 pub mod overturn_hold;
+pub mod restart_on_config_change;
 pub mod rules;
 pub mod service;
 pub mod sliding_window;
@@ -42,7 +43,7 @@ use futures::future::join_all;
 use prost::Message;
 use serde::Deserialize;
 use tokio::sync::Semaphore;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{Instrument, error, info, warn};
 use xai_kafka::{
     BatchConsumerConfig, BatchResult, CancellationToken, KafkaBatchProcessor, KafkaConsumerConfig,
@@ -431,7 +432,7 @@ async fn run_enforcement_inner(
     let rules_override = ctx.dynamic_config.enforcement_rules_yaml(facts.entity_type);
     let compiled_rules = ctx
         .rules_cache
-        .resolve(facts.entity_type, rules_override.as_deref());
+        .resolve(facts.entity_type, rules_override.as_ref());
     let decision = match crate::rules::decide_with(&compiled_rules, &facts) {
         Ok(d) => d,
         Err(e) => {
@@ -831,10 +832,10 @@ async fn run_enforcement(
     Ok(outcome)
 }
 
-async fn build_kafka_producers(cfg: &Config, dynamic_config: &DynamicConfig) -> KafkaProducers {
+async fn build_kafka_producers(cfg: &Config, boot_config: &serde_json::Value) -> KafkaProducers {
     let mut producers = KafkaProducers::default();
 
-    for (name, spec) in dynamic_config.kafka_producers() {
+    for (name, spec) in growthbook::kafka_producers_from_config(Some(boot_config)) {
         if !spec.enabled {
             warn!("kafka producer '{name}' configured but disabled (enabled=false)");
             continue;
@@ -1386,7 +1387,9 @@ pub async fn build_state(cfg: Config) -> Result<(Arc<service::AppState>, Config)
         info!("GROWTHBOOK_ADMIN_API_KEY not set — admin config-mutation endpoints will return 503");
     }
 
-    let kafka_producers = build_kafka_producers(&cfg, &dynamic_config).await;
+    let boot_config = dynamic_config.config().unwrap_or(serde_json::Value::Null);
+
+    let kafka_producers = build_kafka_producers(&cfg, &boot_config).await;
 
     let startup_probe =
         overturn_hold::startup_probe_requested(cfg.overturn_hold_startup_probe.as_deref());
@@ -1402,18 +1405,6 @@ pub async fn build_state(cfg: Config) -> Result<(Arc<service::AppState>, Config)
         });
     }
     hold_gate.publish_config(&dynamic_config.overturn_hold_gate());
-    {
-        let gate = hold_gate.clone();
-        let dynamic_config = dynamic_config.clone();
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(overturn_hold::CONFIG_PUBLISH_INTERVAL);
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tick.tick().await;
-                gate.publish_config(&dynamic_config.overturn_hold_gate());
-            }
-        });
-    }
 
     let state = Arc::new(AppState {
         ais_client,
@@ -1428,6 +1419,7 @@ pub async fn build_state(cfg: Config) -> Result<(Arc<service::AppState>, Config)
         kafka_ready: Arc::new(AtomicBool::new(false)),
         kafka_producers,
         hold_gate,
+        boot_config,
     });
 
     Ok((state, cfg))
@@ -1659,14 +1651,51 @@ async fn probe_broker_reachability(config: KafkaConsumerConfig, timeout: Duratio
     .context("Reachability probe task panicked")?
 }
 
+const KAFKA_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
+
+pub struct KafkaConsumers {
+    cancel: CancellationToken,
+    supervisor: JoinHandle<()>,
+}
+
+impl KafkaConsumers {
+                                                async fn shutdown(self, timeout: Duration) {
+        self.cancel.cancel();
+        let mut supervisor = self.supervisor;
+        if tokio::time::timeout(timeout, &mut supervisor)
+            .await
+            .is_err()
+        {
+            warn!(
+                "Kafka consumers did not stop within {timeout:?}; aborting the in-flight batch \
+                 (redelivered to the next owner; its dedup claims may be stranded)"
+            );
+            supervisor.abort();
+            let _ = supervisor.await;
+        }
+    }
+}
+
+pub async fn shutdown_kafka(state: &service::AppState, consumers: KafkaConsumers) {
+    consumers.shutdown(KAFKA_SHUTDOWN_TIMEOUT).await;
+    state
+        .kafka_producers
+        .flush_all(Duration::from_secs(5))
+        .await;
+}
+
 pub async fn start_kafka_consumers(
     state: Arc<service::AppState>,
     cfg: &Config,
-) -> Result<JoinHandle<()>> {
+) -> Result<KafkaConsumers> {
+    let cancel = CancellationToken::new();
     if !cfg.kafka_consumer_enabled {
         info!("KAFKA_CONSUMER_ENABLED=false — Kafka consumer disabled");
         state.kafka_ready.store(true, Ordering::Relaxed);
-        return Ok(tokio::spawn(async {}));
+        return Ok(KafkaConsumers {
+            cancel,
+            supervisor: tokio::spawn(async {}),
+        });
     }
 
     let growthbook_enabled = cfg.growthbook_url.is_some() && cfg.growthbook_key.is_some();
@@ -1692,12 +1721,10 @@ pub async fn start_kafka_consumers(
             }
         };
 
-    let effective_topic_config = state
-        .dynamic_config
-        .kafka_consumer_topic_labels()
-        .unwrap_or(topic_labels_json);
-    let topics: HashMap<String, TopicEntry> = serde_json::from_value(effective_topic_config)
-        .context("topic config has wrong shape (expected {topic: {processor, ...}})")?;
+    let effective_topic_config =
+        growthbook::kafka_consumer_topic_labels_from_config(Some(&state.boot_config))
+            .unwrap_or(topic_labels_json);
+    let topics = parse_topic_config(effective_topic_config)?;
     let default_cluster = cfg.kafka_consumer_mtls_cluster.as_str();
     let default_zone = cfg.kafka_consumer_mtls_zone.as_str();
     info!("topic config: {} topic(s)", topics.len());
@@ -1847,16 +1874,6 @@ pub async fn start_kafka_consumers(
         cfg.uas_column
     );
 
-    let cancel = CancellationToken::new();
-    {
-        let cancel = cancel.clone();
-        tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                cancel.cancel();
-            }
-        });
-    }
-
     let retry_queue = Arc::new(Mutex::new(BinaryHeap::<RetryEntry>::new()));
 
     let enforcement_ctx = EnforcementCtx {
@@ -1962,7 +1979,7 @@ pub async fn start_kafka_consumers(
 
     let last_progress = Arc::new(AtomicI64::new(0));
 
-    let mut handles: Vec<JoinHandle<()>> = Vec::new();
+    let mut consumers: JoinSet<()> = JoinSet::new();
     let mut error_topics: HashSet<String> = HashSet::new();
     let topics_len = topics.len();
 
@@ -2039,12 +2056,12 @@ pub async fn start_kafka_consumers(
                     max_in_flight,
                 };
 
-                handles.push(tokio::spawn(async move {
+                consumers.spawn(async move {
                     info!("starting score_result Kafka consumer for topic {topic} on {cluster}");
                     if let Err(e) = run_batch_consumer(batch_config, processor, cancel).await {
                         error!("Kafka consumer for topic {topic} exited with error: {e}");
                     }
-                }));
+                });
             }
             TopicConfig::StatsOnly { should_log_content } => {
                 let processor = StatsOnlyProcessor {
@@ -2052,19 +2069,19 @@ pub async fn start_kafka_consumers(
                     last_progress: last_progress.clone(),
                 };
 
-                handles.push(tokio::spawn(async move {
+                consumers.spawn(async move {
                     info!("starting stats_only Kafka consumer for topic {topic} on {cluster}");
                     if let Err(e) = run_batch_consumer(batch_config, processor, cancel).await {
                         error!(
                             "stats_only Kafka consumer for topic {topic} exited with error: {e}"
                         );
                     }
-                }));
+                });
             }
         }
     }
 
-    if handles.is_empty() {
+    if consumers.is_empty() {
         if topics_len > 0 {
             error!(
                 "no Kafka consumers started ({} topic(s) configured, all skipped); \
@@ -2111,11 +2128,14 @@ pub async fn start_kafka_consumers(
         }
     });
 
-    Ok(tokio::spawn(async move {
-        for h in handles {
-            let _ = h.await;
-        }
-    }))
+    Ok(KafkaConsumers {
+        cancel,
+        supervisor: supervise(consumers),
+    })
+}
+
+fn supervise(mut consumers: JoinSet<()>) -> JoinHandle<()> {
+    tokio::spawn(async move { while consumers.join_next().await.is_some() {} })
 }
 
 fn topic_consumer_group_id(base_group_id: &str, topic: &str) -> String {
@@ -2137,7 +2157,71 @@ where
         .min()
 }
 
-pub async fn serve(router: Router, cfg: &Config) -> Result<()> {
+fn parse_topic_config(config: serde_json::Value) -> Result<HashMap<String, TopicEntry>> {
+    serde_json::from_value(config)
+        .context("topic config has wrong shape (expected {topic: {processor, ...}})")
+}
+
+pub(crate) fn validate_restart_config(config: &serde_json::Value) -> Result<()> {
+    match growthbook::kafka_consumer_topic_labels_from_config(Some(config)) {
+        Some(topics) => parse_topic_config(topics).map(drop),
+        None => Ok(()),
+    }
+}
+
+const CONFIG_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+
+fn config_refresh_tick(
+    dynamic_config: &DynamicConfig,
+    hold_gate: &overturn_hold::HoldGate,
+    boot_config: &serde_json::Value,
+) -> restart_on_config_change::Check {
+    dynamic_config.refresh();
+    hold_gate.publish_config(&dynamic_config.overturn_hold_gate());
+    let live = dynamic_config.config().unwrap_or(serde_json::Value::Null);
+    let check = restart_on_config_change::check(boot_config, &live, validate_restart_config);
+    restart_on_config_change::record(&check);
+    check
+}
+
+pub fn spawn_config_refresh(
+    state: &service::AppState,
+    shutdown: xai_service_runner::ShutdownSignal,
+) {
+    spawn_config_refresh_with(
+        state.dynamic_config.clone(),
+        state.hold_gate.clone(),
+        state.boot_config.clone(),
+        shutdown,
+        CONFIG_REFRESH_INTERVAL,
+    );
+}
+
+fn spawn_config_refresh_with(
+    dynamic_config: DynamicConfig,
+    hold_gate: Arc<overturn_hold::HoldGate>,
+    boot_config: serde_json::Value,
+    shutdown: xai_service_runner::ShutdownSignal,
+    interval: Duration,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(interval);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            if let restart_on_config_change::Check::Restart(paths) =
+                config_refresh_tick(&dynamic_config, &hold_gate, &boot_config)
+            {
+                info!("restarting to apply config change: paths={paths:?}");
+                shutdown.trigger();
+                return;
+            }
+        }
+    })
+}
+
+pub async fn serve(router: Router, state: &service::AppState, cfg: &Config) -> Result<()> {
     let server = ServerBuilder::new(cfg.port)
         .merge(router)
         .drain_period(Duration::from_secs(cfg.drain_period_secs))
@@ -2145,6 +2229,7 @@ pub async fn serve(router: Router, cfg: &Config) -> Result<()> {
         .on_ready(|| async {
             info!("Server ready and accepting requests");
         });
+    spawn_config_refresh(state, server.shutdown_signal());
     server.run().await
 }
 
@@ -2168,17 +2253,75 @@ pub async fn run() -> Result<()> {
     let router = Router::new()
         .nest("/api", build_api_router(state.clone(), api_keys))
         .merge(build_docs_router());
-    let kafka_consumers_handle = start_kafka_consumers(state.clone(), &cfg).await?;
+    let kafka_consumers = start_kafka_consumers(state.clone(), &cfg).await?;
 
-    serve(router, &cfg).await?;
-
-    state
-        .kafka_producers
-        .flush_all(Duration::from_secs(5))
-        .await;
-    kafka_consumers_handle.abort();
+    let served = serve(router, &state, &cfg).await;
+    shutdown_kafka(&state, kafka_consumers).await;
+    served?;
     info!("Server shutdown complete");
     Ok(())
+}
+
+#[cfg(test)]
+mod kafka_shutdown_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shutdown_waits_for_the_in_flight_batch() {
+        let cancel = CancellationToken::new();
+        let finished = Arc::new(AtomicBool::new(false));
+        let supervisor = tokio::spawn({
+            let (cancel, finished) = (cancel.clone(), finished.clone());
+            async move {
+                cancel.cancelled().await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                finished.store(true, Ordering::SeqCst);
+            }
+        });
+
+        KafkaConsumers { cancel, supervisor }
+            .shutdown(Duration::from_secs(10))
+            .await;
+
+        assert!(finished.load(Ordering::SeqCst));
+    }
+
+            struct DropFlag(Arc<AtomicBool>);
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_timeout_aborts_the_consumers() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let mut consumers = JoinSet::new();
+        {
+            let guard = DropFlag(stopped.clone());
+            consumers.spawn(async move {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            });
+        }
+        let started = std::time::Instant::now();
+
+        KafkaConsumers {
+            cancel: CancellationToken::new(),
+            supervisor: supervise(consumers),
+        }
+        .shutdown(Duration::from_millis(50))
+        .await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !stopped.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the stuck consumer must be aborted, not detached");
+    }
 }
 
 #[cfg(test)]
@@ -2205,6 +2348,133 @@ mod router_split_tests {
             .layer(axum::middleware::from_fn(pass));
         let public = Router::new().route("/rate_limit/{entity_type}", get(ok));
         let _app: Router = protected.merge(public);
+    }
+}
+
+#[cfg(test)]
+mod config_restart_tests {
+    use super::validate_restart_config;
+    use serde_json::json;
+
+    fn valid_topics() -> serde_json::Value {
+        json!({
+            "abuse.v3.score_results": {
+                "processor": "score_result",
+                "labels": ["enforcement_threshold_reached"],
+                "cluster": "mltraining",
+            },
+            "abuse.stats.v1": { "processor": "stats_only" },
+        })
+    }
+
+    #[test]
+    fn valid_topic_map_passes() {
+        let config = json!({ "kafka": { "consumer": { "topic_labels": valid_topics() } } });
+        validate_restart_config(&config).unwrap();
+    }
+
+    #[test]
+    fn wrong_shape_topic_map_fails() {
+        let array = json!({ "kafka": { "consumer": { "topic_labels": ["abuse.stats.v1"] } } });
+        assert!(validate_restart_config(&array).is_err());
+
+        let no_processor = json!({ "kafka": { "consumer": { "topic_labels": {
+            "abuse.stats.v1": { "cluster": "phoenix" },
+        } } } });
+        assert!(validate_restart_config(&no_processor).is_err());
+
+        let unknown_processor = json!({ "kafka": { "consumer": { "topic_labels": {
+            "abuse.stats.v1": { "processor": "nope" },
+        } } } });
+        assert!(validate_restart_config(&unknown_processor).is_err());
+    }
+
+    #[test]
+    fn absent_topic_map_passes() {
+        validate_restart_config(&serde_json::Value::Null).unwrap();
+        validate_restart_config(&json!({})).unwrap();
+        validate_restart_config(&json!({ "kafka": { "producer": { "decisions": [1] } } })).unwrap();
+    }
+
+            #[tokio::test]
+    async fn restart_trigger_stops_the_server() {
+        use std::time::Duration;
+
+        let server =
+            xai_service_runner::ServerBuilder::new(0).drain_period(Duration::from_millis(10));
+        let dc = test_dynamic_config(json!({ "topic_labels": {} })).await;
+        let refresh = super::spawn_config_refresh_with(
+            dc,
+            test_hold_gate(),
+            json!({}),
+            server.shutdown_signal(),
+            Duration::from_millis(5),
+        );
+
+        tokio::time::timeout(Duration::from_secs(10), server.run())
+            .await
+            .expect("server did not shut down after the restart trigger")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), refresh)
+            .await
+            .expect("refresh task did not end")
+            .unwrap();
+    }
+
+            async fn test_dynamic_config(config: serde_json::Value) -> crate::growthbook::DynamicConfig {
+        let dc = crate::growthbook::DynamicConfig::new(None, None, false, 1, 1, None, None)
+            .await
+            .unwrap();
+        dc.set_snapshot_for_test(crate::growthbook::ConfigSnapshot {
+            config: Some(config),
+            ..Default::default()
+        });
+        dc
+    }
+
+    fn test_hold_gate() -> std::sync::Arc<crate::overturn_hold::HoldGate> {
+        std::sync::Arc::new(crate::overturn_hold::HoldGate::from_url(None, false, None))
+    }
+
+    #[tokio::test]
+    async fn refresh_tick_restarts_only_on_a_valid_boot_only_change() {
+        use crate::restart_on_config_change::Check;
+
+        let boot =
+            json!({ "dry_run": false, "topic_labels": { "a": { "processor": "stats_only" } } });
+        let gate = test_hold_gate();
+
+        let mut live = boot.clone();
+        live["dry_run"] = json!(true);
+        let dc = test_dynamic_config(live).await;
+        assert_eq!(
+            super::config_refresh_tick(&dc, &gate, &boot),
+            Check::Unchanged
+        );
+        assert!(dc.is_dry_run(), "snapshot kept (no client to refresh from)");
+
+        let mut live = boot.clone();
+        live["topic_labels"]["b"] = json!({ "processor": "stats_only" });
+        let dc = test_dynamic_config(live).await;
+        assert_eq!(
+            super::config_refresh_tick(&dc, &gate, &boot),
+            Check::Restart(vec!["/topic_labels".to_string()])
+        );
+
+        let mut live = boot.clone();
+        live["topic_labels"] = json!(["not a map"]);
+        let dc = test_dynamic_config(live).await;
+        assert_eq!(
+            super::config_refresh_tick(&dc, &gate, &boot),
+            Check::Invalid
+        );
+    }
+
+    #[test]
+    fn legacy_top_level_topic_map_is_validated() {
+        validate_restart_config(&json!({ "topic_labels": valid_topics() })).unwrap();
+        let bad = json!({ "topic_labels": { "abuse.stats.v1": "stats_only" } });
+        assert!(validate_restart_config(&bad).is_err());
     }
 }
 

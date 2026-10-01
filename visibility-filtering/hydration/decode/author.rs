@@ -7,7 +7,7 @@ use xai_x_thrift::user_labels::LabelValue;
 const CACHE_CAPACITY: usize = 1_000_000;
 
 pub(crate) type DecodedAuthor = (AuthorFeatures, AuthorLabelSet);
-pub(crate) type AuthorFallbackCache = FallbackCache<u64, DecodedAuthor>;
+pub(crate) type AuthorFallbackCache = FallbackCache<DecodedAuthor>;
 
 pub(crate) fn fallback_cache() -> AuthorFallbackCache {
     FallbackCache::new("author", CACHE_CAPACITY)

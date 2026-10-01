@@ -154,17 +154,12 @@ impl HydrationPlan {
             counts: mem::take(&mut call.counts),
         };
         let in_flight: InFlight<'p> = match group.source {
-            Source::TesPureCore => {
-                let cache = sources
-                    .pure_core_cache()
-                    .map(|cache| (cache, cache.begin_request()));
-                timed.keyed(
-                    call,
-                    |call| sources.pure_cores(&call.keys),
-                    move |pure_cores| fall_back(cache, pure_cores),
-                    Reply::PureCores,
-                )
-            }
+            Source::TesPureCore => timed.keyed(
+                call,
+                |call| sources.pure_cores(&call.keys),
+                move |pure_cores| fall_back(sources.pure_core_cache(), pure_cores),
+                Reply::PureCores,
+            ),
             Source::TesTweet => timed.keyed(
                 call,
                 |call| sources.tweets(&call.keys),
@@ -192,17 +187,12 @@ impl HydrationPlan {
                     Reply::Viewer,
                 )
             }
-            Source::GizmoduckAuthor => {
-                let cache = sources
-                    .author_cache()
-                    .map(|cache| (cache, cache.begin_request()));
-                timed.keyed(
-                    call,
-                    |call| sources.users(&call.keys, group.fields()),
-                    move |authors| fall_back(cache, authors),
-                    Reply::Authors,
-                )
-            }
+            Source::GizmoduckAuthor => timed.keyed(
+                call,
+                |call| sources.users(&call.keys, group.fields()),
+                move |authors| fall_back(sources.author_cache(), authors),
+                Reply::Authors,
+            ),
             Source::Flock => {
                 let viewer_id = call.viewer_id?;
                 Box::pin(async move {
@@ -249,11 +239,11 @@ impl HydrationPlan {
 }
 
 fn fall_back<V: Clone>(
-    cache: Option<(&FallbackCache<u64, V>, u64)>,
+    cache: Option<&FallbackCache<V>>,
     batch: RawHydrationBatch<V>,
 ) -> RawHydrationBatch<V> {
     match cache {
-        Some((cache, generation)) => cache.resolve_hydration_batch(generation, batch),
+        Some(cache) => cache.resolve_hydration_batch(batch),
         None => batch,
     }
 }
@@ -1149,6 +1139,19 @@ mod tests {
         let second = hydrate(&sources, SafetyLevel::TimelineHome, None, &raw).await;
         assert_eq!(second.candidates[0].author_id, 10);
         assert!(second.failed_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pure_core_not_found_is_not_served_when_the_call_fails() {
+        let sources = InMemorySources::default().with_pure_core_cache(pure_core_fallback_cache(8));
+        let raw = [raw(1, Some(10))];
+        let first = hydrate(&sources, SafetyLevel::TimelineHome, None, &raw).await;
+        assert_eq!(first.candidates[0].author_id, 10);
+        assert!(first.failed_ids.is_empty());
+
+        sources.break_source(Source::TesPureCore, Fault::Fails);
+        let second = hydrate(&sources, SafetyLevel::TimelineHome, None, &raw).await;
+        assert_eq!(second.failed_ids, ids(&[1]));
     }
 
     #[tokio::test]

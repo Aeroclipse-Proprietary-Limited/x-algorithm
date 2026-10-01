@@ -1,3 +1,4 @@
+use crate::caller_identity::{self, Endpoint};
 use crate::safety_label_source::metrics::{self, BatchStage, RequestMetricsGuard};
 use crate::safety_label_source::types::FailureKind;
 use crate::safety_label_source::{LookupError, SafetyLabelSource};
@@ -22,6 +23,7 @@ impl GetSafetyLabelsEndpoint {
         &self,
         request: Request<vf_pb::GetSafetyLabelsRequest>,
     ) -> Result<Response<vf_pb::GetSafetyLabelsResponse>, Status> {
+        caller_identity::record(Endpoint::GetSafetyLabels, &request);
         let request_metrics = RequestMetricsGuard::new();
         match self.handle_inner(request).await {
             Ok(response) => {

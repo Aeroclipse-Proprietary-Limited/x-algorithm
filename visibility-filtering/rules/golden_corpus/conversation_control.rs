@@ -8,8 +8,8 @@ use crate::models::{
     ViewerProfile,
 };
 use crate::rules::fixtures::{
-    allow, blurred, blurred_and_limited, candidate, conversation_control, limited, viewer,
-    viewer_with_profile, VIEWER_ID,
+    allow, blurred, blurred_and_limited, candidate, conversation_control, limited, limited_for,
+    viewer, viewer_with_profile, VIEWER_ID,
 };
 use crate::rules::SafetyLevel::TimelineHomeHydration;
 use xai_core_entities::entities::{ConversationControl, ConversationControlArm};
@@ -33,7 +33,13 @@ pub(super) fn rows() -> Vec<Row> {
                 ),
                 hydration(
                     Role::As("read_only", read_only_viewer(VIEWER_ID)),
-                    limits("limit_replies_by_invitation/limited_engagement/conversation_control"),
+                    limited_for(
+                        &[
+                            LimitedEngagementReason::ConversationControl,
+                            LimitedEngagementReason::ReadonlyViewer,
+                        ],
+                        "limit_replies_by_invitation/limited_engagement/conversation_control",
+                    ),
                 ),
             ],
             [

@@ -7,6 +7,7 @@ use crate::filter_tweets::FilterTweetsEndpoint;
 use crate::get_safety_labels::GetSafetyLabelsEndpoint;
 use crate::hydration::sources::ProdSources;
 use crate::hydration::tweet_source::TweetSource;
+use crate::limited_actions_copy::LimitedActionsCopy;
 use crate::models::{ClientCapability, RawCandidate, TweetId};
 use crate::rules::metrics::Rpc;
 use crate::rules::SafetyLevel;
@@ -105,6 +106,10 @@ where
 pub async fn build_prod_server(datacenter: &str) -> VFServer {
     info!("Initializing prod clients for datacenter={}", datacenter);
 
+    let (limited_actions_copy, copy_drift) = LimitedActionsCopy::load_baked(
+        datacenter,
+        xai_stats_receiver::global_stats_receiver().as_deref(),
+    );
     let init_deadline = tokio::time::Instant::now() + CLIENT_INIT_RETRY_BUDGET;
 
     let deterministic_aperture = std::env::var("APP_ENV").as_deref() == Ok("prod");
@@ -310,6 +315,7 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
         switch_files,
         feature_switches,
         Arc::clone(&country_lists),
+        copy_drift,
         stats,
     );
     let rule_engine = crate::rules::RuleEngine::with_country_lists(country_lists);
@@ -331,7 +337,7 @@ pub async fn build_prod_server(datacenter: &str) -> VFServer {
     );
 
     VFServer::from_endpoints(
-        EvaluateTweetsEndpoint::new(filter_tweets.clone(), client_switches),
+        EvaluateTweetsEndpoint::new(filter_tweets.clone(), client_switches, limited_actions_copy),
         FilterTweetsEndpoint::new(filter_tweets, reference_compare),
         GetSafetyLabelsEndpoint::new(safety_label_source),
     )

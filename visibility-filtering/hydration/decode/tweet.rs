@@ -2,7 +2,7 @@ use crate::hydration::fallback_cache::FallbackCache;
 use crate::models::{AuthorId, PureCore, TweetId};
 use xai_core_entities::entities::PureCoreData;
 
-pub(crate) type PureCoreFallbackCache = FallbackCache<u64, PureCore>;
+pub(crate) type PureCoreFallbackCache = FallbackCache<PureCore>;
 
 pub(crate) fn pure_core_fallback_cache(capacity: usize) -> PureCoreFallbackCache {
     FallbackCache::new("author_id", capacity)

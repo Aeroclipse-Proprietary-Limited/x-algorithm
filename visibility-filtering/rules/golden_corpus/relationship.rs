@@ -4,7 +4,7 @@ use crate::hydration::Hydrator::{
     BlockedByAuthor, BlockedByReplyRoot, Blocks, MuteRetweets, Mutes,
 };
 use crate::models::LimitedEngagementReason;
-use crate::rules::fixtures::{allow, candidate, dropped, limited};
+use crate::rules::fixtures::{allow, candidate, dropped, limited, limited_for};
 use crate::rules::SafetyLevel::{TimelineHome, TimelineHomeHydration};
 use xai_core_entities::entities::ConversationControlArm;
 use xai_visibility_filtering::models::FilteredReason;
@@ -73,8 +73,11 @@ pub(super) fn rows() -> Vec<Row> {
             expect: vec![(
                 TimelineHomeHydration,
                 Role::NonFollower,
-                limited(
-                    LimitedEngagementReason::BlockedViewer,
+                limited_for(
+                    &[
+                        LimitedEngagementReason::BlockedViewer,
+                        LimitedEngagementReason::RootAuthorBlockedViewer,
+                    ],
                     "blocked_viewer/limited_engagement",
                 ),
             )],
@@ -105,8 +108,11 @@ pub(super) fn rows() -> Vec<Row> {
             expect: vec![(
                 TimelineHomeHydration,
                 Role::NonFollower,
-                limited(
-                    LimitedEngagementReason::RootAuthorBlockedViewer,
+                limited_for(
+                    &[
+                        LimitedEngagementReason::RootAuthorBlockedViewer,
+                        LimitedEngagementReason::ConversationControl,
+                    ],
                     "blocked_viewer/limited_engagement/root_author_blocked_viewer",
                 ),
             )],

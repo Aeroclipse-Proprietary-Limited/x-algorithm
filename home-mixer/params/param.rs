@@ -1,4 +1,4 @@
-// mirrored from config feature-switch defaults; last sync 2026-09-29T17:02:52Z
+// mirrored from config feature-switch defaults; last sync 2026-09-30T16:00:40Z
 use xai_feature_switches::param;
 
 param!(
@@ -959,10 +959,10 @@ param!(
     false
 );
 param!(
-    FeedSurveyFatigueHours,
+    FeedSurveyFatigueMinutes,
     u32,
-    "rust_home_mixer_feed_survey_fatigue_hours",
-    24
+    "rust_home_mixer_feed_survey_fatigue_minutes",
+    1440
 );
 
 param!(

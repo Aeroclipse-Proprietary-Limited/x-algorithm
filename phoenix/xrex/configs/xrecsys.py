@@ -658,6 +658,7 @@ for config in configs:
                 "condition_search_relevance_on_prompt", False
             ),
             metric_group=mparams.get("metric_group", "default"),
+            enable_platform_metrics=mparams.get("enable_platform_metrics", False),
             metric_mask_keys=mparams.get("metric_mask_keys"),
             continuous_metrics_mae_mean=mparams.get("continuous_metrics_mae_mean", False),
             emb_table_width=mparams["emb_table_width"],

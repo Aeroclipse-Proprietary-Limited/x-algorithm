@@ -34,7 +34,6 @@ const MIN_TIMEOUT_MS: u64 = 10;
 const MAX_TIMEOUT_MS: u64 = 5_000;
 const MAX_POSITIVE_CACHE_SECS: u64 = 3_600;
 const STARTUP_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-pub const CONFIG_PUBLISH_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const BREAKER_FAILURES: u32 = 5;
 pub(crate) const DEFAULT_BREAKER_OPEN: Duration = Duration::from_secs(10);
 pub(crate) const REACHABLE_ERRORS_BEFORE_BACKOFF: u32 = 5;
@@ -4711,7 +4710,6 @@ mod tests {
             1,
             "gauge triple untouched by a labels change"
         );
-        assert_eq!(CONFIG_PUBLISH_INTERVAL, Duration::from_secs(15));
     }
 
 

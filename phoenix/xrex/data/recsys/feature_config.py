@@ -158,6 +158,8 @@ OPTIONAL_COLUMNS: list[str] = [
     "webConvTimeOnSiteInferredMsSeq",
     "webConvTimeOnSiteMeasuredMsSeq",
     "webConvTrackingIntegrationSeq",
+    "exactPhraseSeq",
+    "matchedWordFractionSeq",
 ]
 
 

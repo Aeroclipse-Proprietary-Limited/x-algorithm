@@ -1,7 +1,10 @@
-use super::builders::labeled;
+use super::builders::{labeled, viewer_in_country};
 use super::{Role, Row};
-use crate::models::{ClientCapability, SafetyLabelType, ViewerFeatures};
-use crate::rules::fixtures::{allow, dropped, viewer, AUTHOR_ID, VIEWER_ID};
+use crate::hydration::Hydrator;
+use crate::models::{ClientCapability, SafetyLabelType, ViewerFeatures, ViewerProfile};
+use crate::rules::fixtures::{
+    allow, candidate, dropped, viewer, viewer_with_profile, AUTHOR_ID, VIEWER_ID,
+};
 use crate::rules::SafetyLevel::{
     ImmersiveExpandedRecommendations, TimelineHome, TimelineHomeHydration,
     TimelineHomeRecommendations,
@@ -111,6 +114,76 @@ pub(super) fn rows() -> Vec<Row> {
                     ),
                 ),
             ],
+        },
+        Row {
+            name: "brazil_election_legal_label",
+            post: labeled(SafetyLabelType::BRAZIL_ELECTION_LEGAL),
+            expect: vec![
+                (
+                    TimelineHomeRecommendations,
+                    Role::As("in_br", viewer_in_country("br")),
+                    dropped(
+                        FilteredReason::PossiblyUndesirable,
+                        "brazil_election_legal/drop/undesirable",
+                    ),
+                ),
+                (
+                    TimelineHomeRecommendations,
+                    Role::As("in_us", viewer_in_country("us")),
+                    allow(),
+                ),
+                (
+                    TimelineHomeRecommendations,
+                    Role::As(
+                        "account_br_no_request_country",
+                        viewer_with_profile(ViewerProfile {
+                            account_country_code: Some("br".to_string()),
+                            ..ViewerProfile::default()
+                        }),
+                    ),
+                    allow(),
+                ),
+                (
+                    TimelineHomeRecommendations,
+                    Role::As(
+                        "author_in_br",
+                        ViewerFeatures {
+                            country_code: Some("br".to_string()),
+                            ..viewer(AUTHOR_ID)
+                        },
+                    ),
+                    allow(),
+                ),
+                (TimelineHomeRecommendations, Role::NonFollower, allow()),
+                (
+                    TimelineHome,
+                    Role::As("in_br", viewer_in_country("br")),
+                    allow(),
+                ),
+                (
+                    ImmersiveExpandedRecommendations,
+                    Role::As("in_br", viewer_in_country("br")),
+                    dropped(
+                        FilteredReason::PossiblyUndesirable,
+                        "brazil_election_legal/drop/undesirable",
+                    ),
+                ),
+            ],
+        },
+        Row {
+            name: "brazil_election_legal_label_followed",
+            post: candidate()
+                .with_label(SafetyLabelType::BRAZIL_ELECTION_LEGAL)
+                .with_edge(Hydrator::Follows)
+                .build(),
+            expect: vec![(
+                TimelineHomeRecommendations,
+                Role::As("follower_in_br", viewer_in_country("br")),
+                dropped(
+                    FilteredReason::PossiblyUndesirable,
+                    "brazil_election_legal/drop/undesirable",
+                ),
+            )],
         },
         Row {
             name: "fosnr_abuse_insults_label",

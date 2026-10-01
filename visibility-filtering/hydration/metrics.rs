@@ -256,7 +256,6 @@ pub(crate) fn record_fallback_cache_keys(
     facet: &'static str,
     fresh: usize,
     stale: usize,
-    stale_not_found: usize,
     not_found: usize,
     partial: usize,
     unavailable: usize,
@@ -264,7 +263,6 @@ pub(crate) fn record_fallback_cache_keys(
     for (result, count) in [
         ("fresh", fresh),
         ("stale", stale),
-        ("stale_not_found", stale_not_found),
         ("not_found", not_found),
         ("partial", partial),
         ("unavailable", unavailable),
