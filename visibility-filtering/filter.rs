@@ -236,9 +236,11 @@ mod tests {
     use crate::clients::socialgraph_client::{EdgeQuery, Graph};
     use crate::hydration::plan::Source;
     use crate::hydration::sources::{Fault, InMemorySources};
-    use crate::models::LimitedEngagementReason;
-    use crate::rules::fixtures::{allow, limited};
+    use crate::hydration::Hydrator;
+    use crate::models::{LimitedEngagementReason, TweetFeatures};
+    use crate::rules::fixtures::{allow, dropped, limited};
     use xai_core_entities::entities::PureCoreData;
+    use xai_visibility_filtering::models::FilteredReason;
 
     fn candidate(tweet_id: u64, author_id: Option<u64>) -> RawCandidate {
         RawCandidate {
@@ -351,6 +353,96 @@ mod tests {
             ]]
         );
     }
+
+    #[tokio::test]
+    async fn pure_core_alone_says_a_post_is_a_retweet() {
+        let retweet = PureCoreData {
+            author_id: 10,
+            source_tweet_id: Some(5),
+            source_user_id: Some(20),
+            ..Default::default()
+        };
+        let sources = Arc::new(
+            InMemorySources::default()
+                .pure_core(1, retweet)
+                .tweet(2, 10)
+                .edge(Graph::MuteRetweets, 50, 10)
+                .fail_key(Source::TesTweet, 1),
+        );
+        let outcomes = service(&sources)
+            .run(FilterRequest {
+                viewer_id: Some(50),
+                country_code: None,
+                client_capability: ClientCapability::default(),
+                safety_level: SafetyLevel::TimelineHome,
+                candidates: vec![candidate(1, None), candidate(2, None)],
+                rpc: Rpc::FilterTweets,
+            })
+            .await
+            .outcomes;
+        assert_eq!(
+            outcomes
+                .into_iter()
+                .map(|outcome| (outcome.status, outcome.verdict, outcome.rested_on))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    EvaluationStatus::Failed,
+                    dropped(
+                        FilteredReason::UnspecifiedReason,
+                        "viewer_mutes_retweets/drop/unspecified",
+                    ),
+                    Hydrators::empty(),
+                ),
+                (EvaluationStatus::Evaluated, allow(), Hydrators::empty()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_pure_core_answer_a_post_reads_as_an_original() {
+        let judged = |sources: InMemorySources| {
+            let nullcast = TweetFeatures {
+                is_nullcast: true,
+                ..Default::default()
+            };
+            let sources = Arc::new(sources.tweet_features(1, nullcast));
+            async move {
+                service(&sources)
+                    .run(FilterRequest {
+                        viewer_id: Some(50),
+                        country_code: None,
+                        client_capability: ClientCapability::default(),
+                        safety_level: SafetyLevel::TimelineHome,
+                        candidates: vec![candidate(1, Some(10))],
+                        rpc: Rpc::FilterTweets,
+                    })
+                    .await
+                    .outcomes
+                    .into_iter()
+                    .map(|outcome| (outcome.status, outcome.verdict, outcome.rested_on))
+                    .collect::<Vec<_>>()
+            }
+        };
+        let nullcast_drop = dropped(FilteredReason::TweetIsNullcast, "nullcasted_tweet/drop");
+        assert_eq!(
+            judged(InMemorySources::default().fault(Source::TesPureCore, Fault::Fails)).await,
+            [(
+                EvaluationStatus::Failed,
+                nullcast_drop.clone(),
+                Hydrators::of(Hydrator::PureCore).with(Hydrator::MuteRetweets),
+            )]
+        );
+        assert_eq!(
+            judged(InMemorySources::default()).await,
+            [(
+                EvaluationStatus::Evaluated,
+                nullcast_drop,
+                Hydrators::empty()
+            )]
+        );
+    }
+
     #[tokio::test]
     async fn run_preserves_order_duplicates_unresolved_authors_and_labels() {
         let labels = vf_pb::SafetyLabelMap {

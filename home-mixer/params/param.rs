@@ -1,4 +1,4 @@
-// mirrored from config feature-switch defaults; last sync 2026-09-30T16:00:40Z
+// mirrored from config feature-switch defaults; last sync 2026-10-01T16:00:46Z
 use xai_feature_switches::param;
 
 param!(
@@ -600,6 +600,36 @@ param!(
     i32,
     "rust_home_mixer_simclusters_max_candidate_age_hours",
     48
+);
+param!(
+    EnableSidSource,
+    bool,
+    "rust_home_mixer_enable_sid_source",
+    false
+);
+param!(
+    SidSourceMaxResults,
+    u32,
+    "rust_home_mixer_sid_source_max_results",
+    800
+);
+param!(
+    SidSourceMaxSeeds,
+    usize,
+    "rust_home_mixer_sid_source_max_seeds",
+    50
+);
+param!(
+    SidSourceMaxPerSeed,
+    u32,
+    "rust_home_mixer_sid_source_max_per_seed",
+    100
+);
+param!(
+    SidSourceMinPrefixDepth,
+    u32,
+    "rust_home_mixer_sid_source_min_prefix_depth",
+    3
 );
 
 param!(

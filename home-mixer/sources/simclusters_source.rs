@@ -147,7 +147,7 @@ impl Source<ScoredPostsQuery, PostCandidate> for SimclustersSource {
     }
 }
 
-fn has_post_signals(query: &ScoredPostsQuery) -> bool {
+pub(crate) fn has_post_signals(query: &ScoredPostsQuery) -> bool {
     [
         query.explicit_engagement_signals.as_ref(),
         query.implicit_engagement_signals.as_ref(),
@@ -157,7 +157,7 @@ fn has_post_signals(query: &ScoredPostsQuery) -> bool {
     .any(|by_type| by_type.values().any(|list| !list.is_empty()))
 }
 
-fn post_signal_ids(query: &ScoredPostsQuery) -> Vec<i64> {
+pub(crate) fn post_signal_ids(query: &ScoredPostsQuery) -> Vec<i64> {
     let mut signals: Vec<&EngagementSignal> = Vec::new();
     for by_type in [
         query.explicit_engagement_signals.as_ref(),

@@ -34,7 +34,7 @@ impl FilterTweetsEndpoint {
         let entered = tokio::time::Instant::now();
         let request_metrics = RequestMetricsGuard::new();
         let grpc_timeout = parse_grpc_timeout(request.metadata());
-        caller_identity::record(Endpoint::FilterTweets, &request);
+        let caller = caller_identity::record(Endpoint::FilterTweets, &request);
         let context = crate::hydration::request_context(entered, grpc_timeout);
         let req = request.into_inner();
         ft_metrics::record_batch_size(ft_metrics::BATCH_SIZE, req.tweets.len());
@@ -102,6 +102,7 @@ impl FilterTweetsEndpoint {
 
         request_metrics.record_deadline(grpc_timeout);
         request_metrics.mark_success();
+        caller.mark_success();
         Ok(Response::new(vf_pb::VisibilityFilterResponse { results }))
     }
 }

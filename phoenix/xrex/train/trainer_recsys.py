@@ -64,6 +64,7 @@ from xrex.data.recsys.sequence_packing import (
     pack_batch,
 )
 from xrex.data.retrieval_dataset import RetrievalDataset
+from xrex.data.rust_kafka_recsys import RustKafkaDataset
 from xrex.data.streaming.kafkaloader import PhoenixKafkaDataset, report_training_metrics
 from xrex.eval.eval_utils import report_forward_eval_results
 from xrex.eval.metrics_recsys import merge_report_extras
@@ -429,6 +430,9 @@ class RecsysTrainer(Trainer):
 
     use_async_emb: bool = False
 
+    use_row_emb: bool = False
+    row_emb_recv_factor: float = 2.0
+
     _async_emb_context: AsyncEmbContextHandle | None = field(default=None, init=False, repr=False)
     _emb_hash_vocab: int = field(default=0, init=False, repr=False)
     _first_step_embedding_lookup_start_jit: typing.Any = field(default=None, init=False, repr=False)
@@ -569,6 +573,8 @@ class RecsysTrainer(Trainer):
         if self.emb_optim_config._active() == "rowwise_adagrad":
             sparse_emb_optim = self.emb_optim_config.make_optimizer(self.optim)
             emb_table_state = sparse_emb_optim.init({"table": emb_table})
+        if self.use_row_emb:
+            emb_table = replace(emb_table, pspec=P("expert", None))
         emb_table = replace(emb_table, x=emb_table.x.at[0, :].set(0))
         post_embeddings = PostEmbeddings(
             post_ids=jnp.arange(1).astype(jnp.int32),
@@ -954,6 +960,12 @@ class RecsysTrainer(Trainer):
             data_rank = dataset_metadata.data_rank
             data_world_size = dataset_metadata.data_world_size
             elapsed_samples = dataset_metadata.elapsed_samples
+
+        if isinstance(self.dataset, RustKafkaDataset) and self.dataset.redistribution_reader_count(
+            data_world_size
+        ):
+            if self.evals or self.empty_history_augmentation_rate > 0:
+                raise ValueError("Redistribution requires one consumed batch per training step")
 
         assert elapsed_samples >= self.dataloader_offset, (
             f"elapsed_samples {elapsed_samples} < dataloader_offset {self.dataloader_offset}"
@@ -1457,15 +1469,17 @@ class RecsysTrainer(Trainer):
             (jnp.ones_like(loss), next_step_lookup_pin)
         )
 
-        token_ids, _ = jax.lax.optimization_barrier(
-            (self.get_flattened_token_ids(data), prefetched_embeddings)
-        )
-        unique_tokens, segment_ids = compress_token_ids(
-            token_ids,
-            fill_size=self._async_emb_context.num_unique,
-            fill_value=self._emb_hash_vocab,
-            output_sharding=P(self._async_emb_context.data_axis),
-        )
+        unique_tokens = segment_ids = None
+        if not self.use_row_emb:
+            token_ids, _ = jax.lax.optimization_barrier(
+                (self.get_flattened_token_ids(data), prefetched_embeddings)
+            )
+            unique_tokens, segment_ids = compress_token_ids(
+                token_ids,
+                fill_size=self._async_emb_context.num_unique,
+                fill_value=self._emb_hash_vocab,
+                output_sharding=P(self._async_emb_context.data_axis),
+            )
 
         gradients, emb_gradients = loss_vjp(loss_cotangent)
         if self.precision_level >= 2:
@@ -1561,7 +1575,9 @@ class RecsysTrainer(Trainer):
             )
         except Exception:
             assert self._async_emb_context is not None
-            async_emb.async_emb_api.abort(self._async_emb_context.context_id)
+            recsys_async_emb.kernel_api(self._async_emb_context).abort(
+                self._async_emb_context.context_id
+            )
             raise
 
         return state, metrics, extras
@@ -1602,6 +1618,7 @@ class RecsysTrainer(Trainer):
             if isinstance(self.model_config, RecsysTwoTowerModelConfig)
             else self.model_config
         )
+        cand_slot_lens = getattr(layout, "cand_slot_lens", None)
         block_sparse = build_block_sparse_layout(
             cu_seqlens=layout.cu_seqlens,
             transformer_candidate_seq_len=transformer_candidate_seq_len,
@@ -1609,6 +1626,9 @@ class RecsysTrainer(Trainer):
             packed_seq_len=int(layout.segment_ids.shape[1]),
             padding_mask=layout.padding_mask,
             num_user_prefix_tokens=_mc.num_user_prefix_tokens,
+            candidate_slot_lens=(
+                np.asarray(cand_slot_lens) if cand_slot_lens is not None else None
+            ),
         )
         return {**batch, "packing_layout": replace(layout, block_sparse=block_sparse)}
 
@@ -1631,8 +1651,18 @@ class RecsysTrainer(Trainer):
             return get_device_tuning_config().block_q
         raise ValueError(f"Unexpected attn_impl {attn_impl!r} for seqpack block size")
 
+    def _row_emb_state_sharding(self, state_sharding):
+        emb_state = state_sharding.emb_table_state
+        if emb_state is None:
+            return state_sharding
+        row_sharding = NamedSharding(self.mesh, P("expert"))
+        emb_state = emb_state._replace(row_sum_sq={**emb_state.row_sum_sq, "table": row_sharding})
+        if emb_state.last_step is not None:
+            emb_state = emb_state._replace(last_step={**emb_state.last_step, "table": row_sharding})
+        return state_sharding._replace(emb_table_state=emb_state)
+
     def _create_async_emb_executables(self, init_data, lr_shape, compiler_options) -> None:
-        if async_emb is None:
+        if async_emb is None and not self.use_row_emb:
             raise RuntimeError(
                 "use_async_emb requires the async_emb kernels (xrex.cuda.async_emb), "
                 "which failed to import: no compiled binding was found, or the "
@@ -1660,15 +1690,32 @@ class RecsysTrainer(Trainer):
         assert self._emb_hash_vocab < 2**31
         num_unique_tokens = min(tokens_per_batch, self._emb_hash_vocab) + 1
 
-        self._async_emb_context = async_emb.make_context_handle(
-            self.mesh,
-            ("expert",),
-            data_axis=data_axis,
-            tokens_per_batch=tokens_per_batch,
-            emb_width=emb_width,
-            num_unique=num_unique_tokens,
-            num_devices_per_node=self.parallel_config.num_devices_per_node,
-        )
+        if self.use_row_emb:
+            try:
+                from xrex.cuda.row_emb import row_emb
+            except ImportError as e:
+                raise RuntimeError(f"use_row_emb requires the row_emb kernels: {e}") from e
+
+            self._async_emb_context = row_emb.make_context_handle(
+                self.mesh,
+                ("expert",),
+                data_axis=data_axis,
+                tokens_per_batch=tokens_per_batch,
+                emb_width=emb_width,
+                vocab_rows=self.state_shape.emb_table.x.shape[0],
+                recv_factor=self.row_emb_recv_factor,
+                num_devices_per_node=self.parallel_config.num_devices_per_node,
+            )
+        else:
+            self._async_emb_context = async_emb.make_context_handle(
+                self.mesh,
+                ("expert",),
+                data_axis=data_axis,
+                tokens_per_batch=tokens_per_batch,
+                emb_width=emb_width,
+                num_unique=num_unique_tokens,
+                num_devices_per_node=self.parallel_config.num_devices_per_node,
+            )
 
         row_sharding = NamedSharding(self.mesh, P(data_axis, None))
 
@@ -1734,6 +1781,12 @@ class RecsysTrainer(Trainer):
             self.model_config, (RecsysAggregatedModelConfig, RecsysTwoTowerModelConfig)
         )
         assert isinstance(self.dataset, PhoenixDataset)
+
+        if self.use_row_emb:
+            if not self.use_async_emb:
+                raise ValueError("use_row_emb requires use_async_emb=True")
+            if self.emb_optim_config._active() != "rowwise_adagrad":
+                raise ValueError("use_row_emb requires the rowwise_adagrad embedding optimizer")
 
         if isinstance(self.model_config, RecsysAggregatedModelConfig):
             ctx = self.model_config.context_features
@@ -1882,6 +1935,8 @@ class RecsysTrainer(Trainer):
             )
 
         self.state_sharding = self.get_sharding(self.state_shape)
+        if self.use_row_emb:
+            self.state_sharding = self._row_emb_state_sharding(self.state_sharding)
         self.data_sharding = NamedSharding(
             self.mesh,
             P(("stage", *self.model_config.model_config.data_axis), ("seq", "model")),
@@ -2325,6 +2380,61 @@ class RecsysTrainer(Trainer):
             return (lambda tree: tree._replace(opt_state=None)), {"opt_state"}
         return super().warm_start_staging_spec()
 
+    def _emb_table_checkpoint_is_column_chunked(self, ctx: TrainerContext, tag) -> bool:
+        import orbax.checkpoint as ocp
+        import tensorstore as ts
+
+        from xai_checkpointing import load as checkpointing_load
+
+        base = pathlib.Path(ctx.checkpoint.path) / (tag or "orbax-ckpt")
+        try:
+            _, metadata_json, names, ts_context = checkpointing_load._prepare_checkpoint_read(
+                base, None
+            )
+            if "emb_table" not in names:
+                return False
+            info = ocp.type_handlers.ParamInfo(
+                name="emb_table",
+                path=base / "emb_table",
+                parent_dir=base,
+                is_ocdbt_checkpoint=True,
+                use_zarr3=metadata_json["use_zarr3"],
+            )
+            tspec = ocp.type_handlers.get_json_tspec_read(info, use_ocdbt=True)
+            table = ts.open(ts.Spec(tspec), open=True, context=ts_context).result()
+        except Exception as error:
+            rank_logger.warning(
+                "Could not inspect the emb_table chunk layout of %s (%s); staging the restore "
+                "in the row layout",
+                ctx.checkpoint.path,
+                error,
+            )
+            return False
+        chunk = tuple(table.chunk_layout.read_chunk.shape)
+        return chunk[0] == table.shape[0] and chunk[1] < table.shape[1]
+
+    def _load_checkpoint_staging_emb_table_by_columns(self, ctx: TrainerContext, tag):
+        row_sharding = self.state_sharding
+        column = NamedSharding(self.mesh, P(None, "expert"))
+        rank_logger.info(
+            "emb_table in %s is column-chunked; staging its restore by columns and "
+            "resharding to rows on device",
+            ctx.checkpoint.path,
+        )
+        self.state_sharding = row_sharding._replace(emb_table=column)
+        try:
+            res = super().maybe_load_checkpoint(ctx, tag)
+        finally:
+            self.state_sharding = row_sharding
+        assert self.state.emb_table is not None
+        to_rows = jax.jit(
+            lambda x: x, in_shardings=column, out_shardings=row_sharding.emb_table, donate_argnums=0
+        )
+        self.state = self.state._replace(
+            emb_table=replace(self.state.emb_table, x=to_rows(self.state.emb_table.x))
+        )
+        return res
+
     def maybe_load_checkpoint(self, ctx: TrainerContext, tag=None):
         assert isinstance(
             self.model_config, (RecsysAggregatedModelConfig, RecsysTwoTowerModelConfig)
@@ -2519,7 +2629,10 @@ class RecsysTrainer(Trainer):
                 )
 
         if not full_path:
-            res = super().maybe_load_checkpoint(ctx, tag)
+            if self.use_row_emb and self._emb_table_checkpoint_is_column_chunked(ctx, tag):
+                res = self._load_checkpoint_staging_emb_table_by_columns(ctx, tag)
+            else:
+                res = super().maybe_load_checkpoint(ctx, tag)
         else:
             start_load = time.time()
             checksums = json.loads(checksums)["global_checksums"]
@@ -2690,7 +2803,9 @@ class RecsysTrainer(Trainer):
         self.offsets_to_commit = self._batch_pipeline.current.offsets
 
         assert self._async_emb_context is not None
-        ready_step = async_emb.async_emb_api.wait_step_ready(self._async_emb_context.context_id)
+        ready_step = recsys_async_emb.kernel_api(self._async_emb_context).wait_step_ready(
+            self._async_emb_context.context_id
+        )
         assert ready_step != 0 or self._async_emb_lookup_pin is None
         return self._batch_pipeline.current.batch
 
@@ -2855,12 +2970,19 @@ class RecsysTrainer(Trainer):
         assert isinstance(dataset, PhoenixDataset), f"Got {type(dataset)}"
         assert isinstance(self.state, RecsysTrainingState), f"Got {type(self.state)}"
 
-        if self.offsets_to_commit:
+        if self.offsets_to_commit or (
+            isinstance(dataset, RustKafkaDataset)
+            and dataset.redistribution_reader_count(jax.process_count())
+        ):
             items_list = list(self.offsets_to_commit.items())
 
             n_partitions = dataset.num_kafka_partitions
             assert n_partitions is not None, "num_kafka_partitions must be set for Kafka offsets"
             max_size = (n_partitions + jax.process_count() - 1) // jax.process_count()
+            if isinstance(dataset, RustKafkaDataset) and dataset.redistribution_reader_count(
+                jax.process_count()
+            ):
+                max_size = n_partitions
 
             items_padded = items_list + [(-1, 0)] * (max_size - len(items_list))
 
@@ -2868,24 +2990,25 @@ class RecsysTrainer(Trainer):
 
             all_offsets = multihost_utils.process_allgather(items_array, tiled=True)
 
-            u = collections.defaultdict(int)
-            for k, v in all_offsets:
-                u[k] = max(v, u[k])
+            if np.any(all_offsets[:, 0] >= 0):
+                u = collections.defaultdict(int)
+                for k, v in all_offsets:
+                    u[k] = max(v, u[k])
 
-            n = dataset.num_kafka_partitions
-            assert n is not None
-            _k = np.arange(n, dtype=all_offsets.dtype)
-            _v = np.array([u.get(k, 0) for k in range(n)], dtype=all_offsets.dtype)
+                n = dataset.num_kafka_partitions
+                assert n is not None
+                _k = np.arange(n, dtype=all_offsets.dtype)
+                _v = np.array([u.get(k, 0) for k in range(n)], dtype=all_offsets.dtype)
 
-            offset_keys: jax.Array = multihost_utils.host_local_array_to_global_array(
-                _k, self.mesh, P()
-            )
-            offsets_values: jax.Array = multihost_utils.host_local_array_to_global_array(
-                _v, self.mesh, P()
-            )
+                offset_keys: jax.Array = multihost_utils.host_local_array_to_global_array(
+                    _k, self.mesh, P()
+                )
+                offsets_values: jax.Array = multihost_utils.host_local_array_to_global_array(
+                    _v, self.mesh, P()
+                )
 
-            self.state = self.state._replace(offset_keys=offset_keys)
-            self.state = self.state._replace(offset_values=offsets_values)
+                self.state = self.state._replace(offset_keys=offset_keys)
+                self.state = self.state._replace(offset_values=offsets_values)
 
         self.maybe_build_retrieval_post_embeddings()
         self.maybe_build_gen_recs_post_embeddings()
@@ -3219,7 +3342,9 @@ class RecsysTrainer(Trainer):
                 and not issubclass(exception_type, StopIteration)
                 and self._async_emb_context is not None
             ):
-                async_emb.async_emb_api.abort(self._async_emb_context.context_id)
+                recsys_async_emb.kernel_api(self._async_emb_context).abort(
+                    self._async_emb_context.context_id
+                )
 
             shutdown = getattr(self.dataset, "shutdown", None)
             if callable(shutdown):

@@ -45,7 +45,7 @@ impl EvaluateTweetsEndpoint {
     ) -> Result<Response<vf_pb::EvaluateTweetsResponse>, Status> {
         let entered = tokio::time::Instant::now();
         let request_metrics = RequestMetricsGuard::named(REQUESTS, LATENCY_MS);
-        caller_identity::record(Endpoint::EvaluateTweets, &request);
+        let caller = caller_identity::record(Endpoint::EvaluateTweets, &request);
         let context = crate::hydration::request_context(
             entered,
             crate::filter_tweets::parse_grpc_timeout(request.metadata()),
@@ -57,10 +57,12 @@ impl EvaluateTweetsEndpoint {
         {
             Ok(response) => {
                 request_metrics.mark_success();
+                caller.mark_success();
                 Ok(Response::new(response))
             }
             Err(status) => {
                 request_metrics.mark_failure();
+                caller.mark_failure();
                 Err(status)
             }
         }

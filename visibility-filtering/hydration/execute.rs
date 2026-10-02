@@ -479,11 +479,18 @@ mod tests {
     async fn each_candidate_carries_the_nodes_that_failed_for_it() {
         use ConversationControlArm::MyNetwork;
         use Hydrator::{
-            BlockedByAuthor, BlockedByReplyRoot, Follows, PureCore, RootFollowsViewer,
-            RootFollowsViewerSecondDegree, SuperFollowsExclusive, Tweet,
+            BlockedByAuthor, BlockedByReplyRoot, Blocks, Follows, MuteRetweets, Mutes, PureCore,
+            RootFollowsViewer, RootFollowsViewerSecondDegree, SuperFollowsExclusive, Tweet,
         };
         use SafetyLevel::{TimelineHome, TimelineHomeHydration};
         let world = || InMemorySources::default().tweet(1, 10).tweet(2, 20);
+        let retweet = PureCoreData {
+            author_id: 10,
+            source_tweet_id: Some(5),
+            source_user_id: Some(30),
+            ..Default::default()
+        };
+        let relationships = Hydrators::of(Follows).with(Blocks).with(Mutes);
         let rows = [
             (
                 "failed tweet row",
@@ -518,6 +525,20 @@ mod tests {
                 Some(VIEWER),
                 world().fault(Source::TesPureCore, Fault::Fails),
                 [Hydrators::of(PureCore).with(BlockedByReplyRoot); 2],
+            ),
+            (
+                "failed pure core at home, authors from the request",
+                TimelineHome,
+                Some(VIEWER),
+                world().fault(Source::TesPureCore, Fault::Fails),
+                [Hydrators::of(PureCore).with(MuteRetweets); 2],
+            ),
+            (
+                "failed relationships select on a retweet and an original",
+                TimelineHome,
+                Some(VIEWER),
+                world().pure_core(1, retweet).fail_graph(Graph::Mutes),
+                [relationships.with(MuteRetweets), relationships],
             ),
             (
                 "failed pure core, logged out",
@@ -656,6 +677,51 @@ mod tests {
                 },
             ]]
         );
+    }
+
+    #[tokio::test]
+    async fn only_retweeters_are_asked_for_the_mute_retweets_edge() {
+        let relationships = |authors: &[u64], retweeters: &[u64]| {
+            vec![
+                EdgeQuery::forward(Graph::Follows, authors.to_vec()),
+                EdgeQuery::forward(Graph::Blocks, authors.to_vec()),
+                EdgeQuery::forward(Graph::Mutes, authors.to_vec()),
+                EdgeQuery::forward(Graph::MuteRetweets, retweeters.to_vec()),
+            ]
+        };
+        let retweet = PureCoreData {
+            author_id: 10,
+            source_tweet_id: Some(5),
+            source_user_id: Some(20),
+            ..Default::default()
+        };
+        let sources = InMemorySources::default()
+            .pure_core(1, retweet)
+            .tweet(2, 30)
+            .tweet(5, 20);
+        let raw_candidates = [raw(1, None), raw(2, None)];
+        let request = HydrationRequest::new(
+            Some(VIEWER),
+            None,
+            ClientCapability::default(),
+            &raw_candidates,
+        )
+        .with_retweet_sources(true);
+        RuleEngine::for_tests()
+            .plan(SafetyLevel::TimelineHome)
+            .hydrate(&sources, request)
+            .await;
+        assert_eq!(sources.selects(), [relationships(&[10, 20, 30], &[10])]);
+
+        let originals = InMemorySources::default().tweet(2, 30);
+        hydrate(
+            &originals,
+            SafetyLevel::TimelineHome,
+            Some(VIEWER),
+            &[raw(2, None)],
+        )
+        .await;
+        assert_eq!(originals.selects(), [relationships(&[30], &[])]);
     }
 
     #[tokio::test]

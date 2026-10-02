@@ -294,7 +294,7 @@ async fn run_enforcement_inner(
 
     let gated_user_id = match entity_type {
         EntityType::User => entity_id,
-        EntityType::Post => user_id, 
+        EntityType::Post => user_id,
     };
     if test_user::is_test_user_id(gated_user_id) {
         info!(
@@ -370,7 +370,7 @@ async fn run_enforcement_inner(
             }
         }
         EntityType::Post => {
-            let author_id = user_id; 
+            let author_id = user_id;
             let (post_allowlist, author_allowlist) = tokio::join!(
                 fetch_entity_allowlist(ctx.allowlist.as_ref(), EntityType::Post, entity_id),
                 fetch_user_allowlist(ctx.allowlist.as_ref(), author_id),
@@ -2710,9 +2710,9 @@ mod kafka_topic_config_tests {
         let certs = S2sCerts::new("/ca.crt", "/tls.crt", "/tls.key");
 
         for (cluster, zone) in [
-            ("not-a-cluster", "atla"), 
-            ("bluebird-1", "atla"),    
-            ("mltraining", "iad"),     
+            ("not-a-cluster", "atla"),
+            ("bluebird-1", "atla"),
+            ("mltraining", "iad"),
         ] {
             assert!(
                 KafkaConsumerConfigBuilder::for_cluster_mtls_zone(
@@ -2752,7 +2752,7 @@ mod dedup_retention_tests {
     fn only_success_holds_full_dedup_window() {
         assert!(outcome_holds_full_dedup("success"));
         for skip in [
-            "dry_run", 
+            "dry_run",
             "dedup_skipped",
             "very_high_follower_count",
             "high_follower_count",
@@ -3290,7 +3290,7 @@ mod generic_dispatch_tests {
                 ..Default::default()
             },
             RequestedActionFacts {
-                kind: "bounce_captcha".into(), 
+                kind: "bounce_captcha".into(),
                 head: "IsCuspHead".into(),
                 ..Default::default()
             },
@@ -3446,7 +3446,7 @@ mod health_tests {
             ERR_DELETE,
             true,
         );
-        assert!(!ready); 
-        assert!(!del); 
+        assert!(!ready);
+        assert!(!del);
     }
 }

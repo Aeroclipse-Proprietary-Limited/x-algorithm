@@ -120,7 +120,7 @@ impl PostStore {
                 .or_default();
             user_posts_entry.push_back(TinyPost {
                 post_id: post.post_id,
-                created_at: post.deleted_at, 
+                created_at: post.deleted_at,
             });
         }
     }
@@ -239,7 +239,7 @@ impl PostStore {
             user_ids,
             MAX_VIDEO_POSTS_PER_AUTHOR,
             exclude_tweet_ids,
-            &HashSet::new(), 
+            &HashSet::new(),
             start_time,
             request_user_id,
         );
@@ -262,7 +262,7 @@ impl PostStore {
             user_ids,
             MAX_ORIGINAL_POSTS_PER_AUTHOR,
             exclude_tweet_ids,
-            &HashSet::new(), 
+            &HashSet::new(),
             start_time,
             request_user_id,
         );
@@ -338,7 +338,7 @@ impl PostStore {
 
                 let filtered_post_iter = light_post_iter.filter(|post| {
                     if following_users.is_empty() {
-                        return true; 
+                        return true;
                     }
                     post.in_reply_to_post_id.is_none_or(|reply_to_post_id| {
                         if let Some(replied_to_post) = self.posts.get(&reply_to_post_id) {
@@ -530,7 +530,7 @@ impl PostStore {
                             deleted_posts_to_remove.push(trimmed_post.post_id);
                             trimmed += 1;
                         } else {
-                            break; 
+                            break;
                         }
                     }
                 }
@@ -556,7 +556,7 @@ impl PostStore {
                             posts_to_remove.push(trimmed_post.post_id);
                             trimmed += 1;
                         } else {
-                            break; 
+                            break;
                         }
                     }
 
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn test_post_store_basic_operations() {
-        let store = PostStore::new(2 * 24 * 60 * 60, 0); 
+        let store = PostStore::new(2 * 24 * 60 * 60, 0);
 
         assert_eq!(store.original_posts_by_user.len(), 0);
         assert_eq!(store.posts.len(), 0);
@@ -666,7 +666,7 @@ mod tests {
                 &HashSet::new(),
                 &HashSet::new(),
                 Instant::now(),
-                1, 
+                1,
             ),
             Vec::new()
         );
@@ -679,7 +679,7 @@ mod tests {
                 &HashSet::new(),
                 &HashSet::new(),
                 Instant::now(),
-                1, 
+                1,
             ),
             Vec::new()
         );
@@ -687,7 +687,7 @@ mod tests {
 
     #[test]
     fn test_exclude_tweet_ids_filtering() {
-        let store = PostStore::new(2 * 24 * 60 * 60, 0); 
+        let store = PostStore::new(2 * 24 * 60 * 60, 0);
 
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -720,7 +720,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             Instant::now(),
-            1, 
+            1,
         );
         assert_eq!(result.len(), 5);
         let post_ids: Vec<i64> = result.iter().map(|p| p.post_id).collect();
@@ -738,7 +738,7 @@ mod tests {
             &exclude_tweet_ids,
             &HashSet::new(),
             Instant::now(),
-            1, 
+            1,
         );
         assert_eq!(result_with_exclude.len(), 5);
         let post_ids_excluded: Vec<i64> = result_with_exclude.iter().map(|p| p.post_id).collect();
@@ -836,7 +836,7 @@ mod tests {
                 is_retweet: true,
                 is_reply: false,
                 source_post_id: Some(5000),
-                source_user_id: Some(1), 
+                source_user_id: Some(1),
                 has_video: false,
                 conversation_id: Some(1_005),
             },
@@ -865,16 +865,16 @@ mod tests {
             &HashSet::new(),
             &following_users,
             Instant::now(),
-            1, 
+            1,
         );
 
         let post_ids: HashSet<i64> = result.iter().map(|p| p.post_id).collect();
         assert_eq!(post_ids.len(), 3);
-        assert!(post_ids.contains(&1_001)); 
-        assert!(post_ids.contains(&1_002)); 
-        assert!(post_ids.contains(&1_004)); 
-        assert!(!post_ids.contains(&1_003)); 
-        assert!(!post_ids.contains(&1_005)); 
-        assert!(!post_ids.contains(&1_006)); 
+        assert!(post_ids.contains(&1_001));
+        assert!(post_ids.contains(&1_002));
+        assert!(post_ids.contains(&1_004));
+        assert!(!post_ids.contains(&1_003));
+        assert!(!post_ids.contains(&1_005));
+        assert!(!post_ids.contains(&1_006));
     }
 }

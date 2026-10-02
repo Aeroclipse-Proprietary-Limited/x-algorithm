@@ -56,6 +56,7 @@ pub struct RawCandidate {
 pub struct HydratedTweetCandidate {
     pub tweet_id: u64,
     pub author_id: u64,
+    pub source_tweet_id: Option<u64>,
     pub tweet_features: TweetFeatures,
     pub author_features: AuthorFeatures,
     pub author_labels: AuthorLabelSet,

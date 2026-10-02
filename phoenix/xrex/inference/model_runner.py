@@ -16,6 +16,7 @@ import time
 import typing
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from dataclasses import replace as dc_replace
 from typing import Any, Generic, Protocol, TypeVar, Union, final
 
 import haiku as hk
@@ -606,9 +607,7 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
 
     @property
     def compact_candidate_slots(self) -> bool:
-        if not (self.using_seqpack and self.seqpack_packed_len_fractions):
-            return False
-        return not self.using_fa4
+        return bool(self.using_seqpack and self.seqpack_packed_len_fractions)
 
     def full_packed_seq_len(self, bs: int) -> int:
         mc = self.model_config
@@ -2653,6 +2652,9 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
                 )
         if self.using_fa4:
             batch = self.add_block_sparse_layout(batch)
+        layout = batch.get("packing_layout")
+        if layout is not None and getattr(layout, "cand_slot_lens", None) is not None:
+            batch["packing_layout"] = dc_replace(layout, cand_slot_lens=None)
         return batch
 
     def _get_persistent_buffer(
@@ -2874,6 +2876,9 @@ class BaseModelRunner(RecsysTrainer, Generic[RequestBatch, ModelConfig], ABC):
             logger.info("NUMA: re-bound CPU+memory to nodes %s", nodes)
         except Exception as e:
             logger.warning("NUMA: failed to re-bind nodes: %s", e)
+
+    def create_dataset(self, ctx: TrainerContext) -> None:
+        pass
 
     def create_state(self, ctx: TrainerContext) -> None:
         assert isinstance(
@@ -4239,18 +4244,6 @@ class RankingModelRunner(
                 self.forward_jit_by_bs_len[(bs, n)] = jit_fn
             self.forward_jit_by_bs[bs] = jit_fn
         self.forward_jit = self.forward_jit_by_bs[max(self.sorted_buckets)]
-        if (
-            self.seqpack_packed_len_fractions
-            and self.using_seqpack
-            and not self.compact_candidate_slots
-        ):
-            logger.warning(
-                "seqpack_packed_len_fractions=%s ignored: compact candidate slots need a "
-                "kernel that takes per-user lengths from cu_seqlens alone "
-                "(pallas_ranker_varlen_attn); the FA4 packed kernel schedules a fixed "
-                "candidate block per user. Running the fixed layout.",
-                self.seqpack_packed_len_fractions,
-            )
         if self.compact_candidate_slots:
             logger.info(
                 "compact candidate slots: compiled packed lengths per bucket %s",

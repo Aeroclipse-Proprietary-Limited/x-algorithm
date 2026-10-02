@@ -235,8 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_retweet_has_media_exactly_when_its_source_uploaded_some_in_the_batch_or_fetched() {
-        let features = |source_tweet_id, nsfw_admin, media| TweetFeatures {
-            source_tweet_id,
+        let features = |nsfw_admin, media| TweetFeatures {
             nsfw: NsfwFeature {
                 user: false,
                 admin: nsfw_admin,
@@ -260,10 +259,10 @@ mod tests {
                 .pure_core(5, retweet(50, 7))
                 .tweet(6, 60)
                 .tweet(7, 70)
-                .tweet_features(4, features(Some(6), true, media(false, false)))
-                .tweet_features(5, features(Some(7), true, media(true, true)))
-                .tweet_features(6, features(None, false, media(true, true)))
-                .tweet_features(7, features(None, false, media(true, false))),
+                .tweet_features(4, features(true, media(false, false)))
+                .tweet_features(5, features(true, media(true, true)))
+                .tweet_features(6, features(false, media(true, true)))
+                .tweet_features(7, features(false, media(true, false))),
         );
         let filter_tweets = FilterTweets::new(sources, RuleEngine::for_tests());
         let blurred = (

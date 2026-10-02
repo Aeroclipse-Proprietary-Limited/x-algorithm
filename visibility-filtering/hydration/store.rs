@@ -110,6 +110,10 @@ impl Store {
         self.controls.get(request_tweet.tweet_id.0)
     }
 
+    fn source_tweet_id(&self, tweet_id: TweetId) -> Option<TweetId> {
+        self.pure_cores.get(tweet_id.0)?.source_tweet_id
+    }
+
     fn key(&self, origin: KeyOrigin, request_tweet: &RequestTweet) -> Option<u64> {
         match origin {
             KeyOrigin::RequestTweets => Some(request_tweet.tweet_id.0),
@@ -118,6 +122,10 @@ impl Store {
                 .viewer_id
                 .filter(|_| self.control(request_tweet).is_some_and(lists_countries)),
             KeyOrigin::PureCoreAuthor => request_tweet.author.map(AuthorId::get),
+            KeyOrigin::PureCoreRetweeter => self
+                .source_tweet_id(request_tweet.tweet_id)
+                .and(request_tweet.author)
+                .map(AuthorId::get),
             KeyOrigin::PureCoreReplyRoot => self
                 .pure_cores
                 .get(request_tweet.tweet_id.0)?
@@ -418,10 +426,7 @@ impl Store {
             let tweet = tweets.entry(id).or_insert_with(|| HydratedTweet {
                 candidate: None,
                 has_failed_node: false,
-                source_tweet_id: self
-                    .pure_cores
-                    .get(id.0)
-                    .and_then(|core| core.source_tweet_id),
+                source_tweet_id: self.source_tweet_id(id),
                 safety_labels: self.labels.get(id.0).cloned(),
             });
             if let Some(author_id) = request_tweet.author {
@@ -518,6 +523,9 @@ impl Store {
         let mut candidate = HydratedTweetCandidate {
             tweet_id: id,
             author_id: author_id.get(),
+            source_tweet_id: self
+                .source_tweet_id(request_tweet.tweet_id)
+                .map(|source| source.0),
             edges: self
                 .callable
                 .iter()

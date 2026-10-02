@@ -636,6 +636,7 @@ macro_rules! predicates {
     (@declare $node:ident) => { Hydrators::of(Hydrator::$node) };
     (@read $context:ident ()) => { () };
     (@read $context:ident ($($node:ident),+)) => { ($(predicates!(@read $context $node)),+) };
+    (@read $context:ident PureCore) => { $context.source_tweet_id() };
     (@read $context:ident Tweet) => { $context.tweet_features() };
     (@read $context:ident ConversationControl) => { $context.conversation_control() };
     (@read $context:ident TweetSafetyLabels) => { $context.tweet_safety_labels() };
@@ -658,7 +659,7 @@ predicates! {
         NsfwAdminFlag reads Tweet => |_, tweet| tweet.nsfw.admin,
         HasMedia reads Tweet => |_, tweet| tweet.has_media(),
         HasDmcaMedia reads Tweet => |_, tweet| tweet.has_dmca_media(),
-        IsRetweet reads Tweet => |_, tweet| tweet.is_retweet(),
+        IsRetweet reads PureCore => |_, source_tweet_id| source_tweet_id.is_some(),
         IsSupersededEdit reads Tweet => |facts, tweet| tweet.is_superseded_edit(facts.tweet_id()),
         LegalTakedownInRequestCountry reads Tweet
             => |facts, tweet| tweet.legal_takedown_in(facts.request_country()),

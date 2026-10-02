@@ -64,6 +64,11 @@ impl<'a> RuleContext<'a> {
     }
 
     #[inline]
+    pub(super) fn source_tweet_id(&self) -> Option<u64> {
+        self.reads(Hydrator::PureCore).source_tweet_id
+    }
+
+    #[inline]
     pub(super) fn tweet_features(&self) -> &'a TweetFeatures {
         &self.reads(Hydrator::Tweet).tweet_features
     }

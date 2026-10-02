@@ -17,7 +17,6 @@ pub struct NsfwFeature {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TweetFeatures {
-    pub source_tweet_id: Option<u64>,
     pub media: MediaFeature,
     pub takedown_reasons: Vec<TakedownReason>,
     pub nsfw: NsfwFeature,
@@ -28,10 +27,6 @@ pub struct TweetFeatures {
 }
 
 impl TweetFeatures {
-    pub fn is_retweet(&self) -> bool {
-        self.source_tweet_id.is_some()
-    }
-
     pub fn has_media(&self) -> bool {
         self.media.has_media
     }

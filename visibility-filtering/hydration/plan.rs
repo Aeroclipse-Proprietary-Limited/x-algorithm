@@ -60,6 +60,7 @@ pub(super) enum KeyOrigin {
     RequestTweets,
     Viewer,
     PureCoreAuthor,
+        PureCoreRetweeter,
     PureCoreReplyRoot,
     ExclusiveConversationAuthor,
     ConversationRoot(&'static [ConversationControlArm]),
@@ -79,7 +80,9 @@ impl KeyOrigin {
     const fn input(self) -> Option<Hydrator> {
         match self {
             KeyOrigin::RequestTweets | KeyOrigin::Viewer => None,
-            KeyOrigin::PureCoreAuthor | KeyOrigin::PureCoreReplyRoot => Some(Hydrator::PureCore),
+            KeyOrigin::PureCoreAuthor
+            | KeyOrigin::PureCoreRetweeter
+            | KeyOrigin::PureCoreReplyRoot => Some(Hydrator::PureCore),
             KeyOrigin::ExclusiveConversationAuthor => Some(Hydrator::Tweet),
             KeyOrigin::ConversationRoot(_) | KeyOrigin::ViewerForCoAllowedList => {
                 Some(Hydrator::ConversationControl)
@@ -194,7 +197,7 @@ impl Hydrator {
             H::MuteRetweets => node(
                 S::Flock,
                 Part::Edge(Edge::MuteRetweets),
-                K::PureCoreAuthor,
+                K::PureCoreRetweeter,
                 RELATIONSHIPS,
             ),
             H::BlockedByAuthor => node(
@@ -492,6 +495,7 @@ impl fmt::Display for KeyOrigin {
             KeyOrigin::RequestTweets => f.write_str("tweets"),
             KeyOrigin::Viewer => f.write_str("viewer"),
             KeyOrigin::PureCoreAuthor => f.write_str("author"),
+            KeyOrigin::PureCoreRetweeter => f.write_str("retweeter"),
             KeyOrigin::PureCoreReplyRoot => f.write_str("reply_root"),
             KeyOrigin::ExclusiveConversationAuthor => f.write_str("exclusive_author"),
             KeyOrigin::ConversationRoot(arms) => {
@@ -567,7 +571,7 @@ tes/get_tweets after: - nodes: tweet
 safety_labels/get after: - nodes: tweet_safety_labels
 gizmoduck/get_viewer_data after: - nodes: viewer_profile fields: ACCOUNT|EXTENDED_PROFILE|SAFETY (skipped logged out)
 gizmoduck/get_users after: pure_core nodes: author_safety fields: SAFETY|LABELS
-socialgraph/batch_check_relationships after: pure_core nodes: follows,blocks,mutes,mute_retweets follows-fwd[author] blocks-fwd[author] mutes-fwd[author] mute_retweets-fwd[author] (skipped logged out)
+socialgraph/batch_check_relationships after: pure_core nodes: follows,blocks,mutes,mute_retweets follows-fwd[author] blocks-fwd[author] mutes-fwd[author] mute_retweets-fwd[retweeter] (skipped logged out)
 exclusive_content/batch_check_super_follows after: tweet nodes: super_follows_exclusive super_follows-fwd[exclusive_author] (skipped logged out)
 timeline_home_recommendations: 7 calls
 tes/get_tweet_core_datas after: - nodes: pure_core
@@ -575,7 +579,7 @@ tes/get_tweets after: - nodes: tweet
 safety_labels/get after: - nodes: tweet_safety_labels
 gizmoduck/get_viewer_data after: - nodes: viewer_profile fields: ACCOUNT|EXTENDED_PROFILE|SAFETY (skipped logged out)
 gizmoduck/get_users after: pure_core nodes: author_safety,author_labels fields: SAFETY|LABELS
-socialgraph/batch_check_relationships after: pure_core nodes: follows,blocks,mutes,mute_retweets follows-fwd[author] blocks-fwd[author] mutes-fwd[author] mute_retweets-fwd[author] (skipped logged out)
+socialgraph/batch_check_relationships after: pure_core nodes: follows,blocks,mutes,mute_retweets follows-fwd[author] blocks-fwd[author] mutes-fwd[author] mute_retweets-fwd[retweeter] (skipped logged out)
 exclusive_content/batch_check_super_follows after: tweet nodes: super_follows_exclusive super_follows-fwd[exclusive_author] (skipped logged out)
 timeline_home_hydration: 11 calls
 tes/get_tweet_core_datas after: - nodes: pure_core
@@ -595,7 +599,7 @@ tes/get_tweets after: - nodes: tweet
 safety_labels/get after: - nodes: tweet_safety_labels
 gizmoduck/get_viewer_data after: - nodes: viewer_profile fields: ACCOUNT|EXTENDED_PROFILE|SAFETY (skipped logged out)
 gizmoduck/get_users after: pure_core nodes: author_safety,author_labels fields: SAFETY|LABELS
-socialgraph/batch_check_relationships after: pure_core nodes: follows,blocks,mutes,mute_retweets follows-fwd[author] blocks-fwd[author] mutes-fwd[author] mute_retweets-fwd[author] (skipped logged out)
+socialgraph/batch_check_relationships after: pure_core nodes: follows,blocks,mutes,mute_retweets follows-fwd[author] blocks-fwd[author] mutes-fwd[author] mute_retweets-fwd[retweeter] (skipped logged out)
 exclusive_content/batch_check_super_follows after: tweet nodes: super_follows_exclusive super_follows-fwd[exclusive_author] (skipped logged out)
 ";
 

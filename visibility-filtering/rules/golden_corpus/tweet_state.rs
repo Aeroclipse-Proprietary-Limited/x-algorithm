@@ -126,7 +126,7 @@ pub(super) fn rows() -> Vec<Row> {
             name: "stale_edit_retweet",
             post: {
                 let mut retweet = stale_candidate();
-                retweet.tweet_features.source_tweet_id = Some(2);
+                retweet.source_tweet_id = Some(2);
                 retweet
             },
             expect: vec![(TimelineHome, Role::NonFollower, allow())],

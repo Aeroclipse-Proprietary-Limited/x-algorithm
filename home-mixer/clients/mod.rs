@@ -10,6 +10,7 @@ pub mod resurrection_date_client;
 pub mod rotating_channel;
 pub mod s2s;
 pub mod served_history_client;
+pub mod sid_retrieval_client;
 pub mod simclusters_ann_client;
 pub mod tweet_entity_service_client;
 

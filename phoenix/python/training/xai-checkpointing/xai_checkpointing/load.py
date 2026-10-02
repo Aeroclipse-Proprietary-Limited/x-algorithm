@@ -26,6 +26,7 @@ from xai_checkpointing import (
 )
 from xai_checkpointing.dek import adopt_tree_dek
 from xai_checkpointing.encrypted_kvstore import at_dir, use_encrypted_kvstore
+from xai_checkpointing.kms_client import shared_decrypt_client
 from xai_checkpointing.tree_util import has_subtree, tree_to_dict
 
 import orbax.checkpoint as ocp
@@ -86,10 +87,8 @@ def _prepare_checkpoint_read(
         )
         return None, metadata_json, checkpoint_names, ts_context
 
-    import xai_kms
-
     if kms_client is None:
-        kms_client = xai_kms.KmsClient.from_cluster_env()
+        kms_client = shared_decrypt_client()
     raw = adopt_tree_dek(path, kms_client)
     kvstore_base = {
         "driver": "xai_encrypted",

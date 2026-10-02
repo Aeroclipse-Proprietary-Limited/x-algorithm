@@ -27,6 +27,9 @@ use crate::clients::gizmoduck_client::{GizmoduckClient, MockGizmoduckClient, Pro
 
 use crate::clients::impressed_posts_client::ImpressedPostsClient;
 use crate::clients::s2s::{S2S_CHAIN_PATH, S2S_CRT_PATH, S2S_KEY_PATH};
+use crate::clients::sid_retrieval_client::{
+    MockSidRetrievalClient, ProdSidRetrievalClient, SidRetrievalClient,
+};
 use crate::clients::simclusters_ann_client::{
     MockSimClustersAnnClient, ProdSimClustersAnnClient, SimClustersAnnClient,
 };
@@ -95,6 +98,7 @@ use crate::sources::cached_posts_source::CachedPostsSource;
 use crate::sources::phoenix_moe_source::PhoenixMOESource;
 use crate::sources::phoenix_source::PhoenixSource;
 use crate::sources::phoenix_topics_source::PhoenixTopicsSource;
+use crate::sources::sid_source::SidSource;
 use crate::sources::simclusters_source::SimclustersSource;
 use crate::sources::thunder_source::ThunderSource;
 use crate::sources::tweet_mixer_source::TweetMixerSource;
@@ -227,6 +231,7 @@ impl PhoenixCandidatePipeline {
         phoenix_xds: &super::PhoenixXdsConfig,
         vm_ranker_xds: &super::VmRankerXdsConfig,
         sid_client: Arc<dyn SidClient>,
+        sid_retrieval_client: Arc<dyn SidRetrievalClient>,
     ) -> PhoenixCandidatePipeline {
         let query_hydrators: Vec<Box<dyn QueryHydrator<ScoredPostsQuery>>> = vec![
             Box::new(ScoringSequenceQueryHydrator::new(
@@ -318,6 +323,10 @@ impl PhoenixCandidatePipeline {
             simclusters_ann_client,
             core_data_hydrator.clone(),
         ));
+        let sid_source = Box::new(SidSource::new(
+            sid_retrieval_client,
+            core_data_hydrator.clone(),
+        ));
         let cached_posts_source = Box::new(CachedPostsSource);
         let sources: Vec<Box<dyn Source<ScoredPostsQuery, PostCandidate>>> = vec![
             thunder_source,
@@ -326,6 +335,7 @@ impl PhoenixCandidatePipeline {
             phoenix_source,
             phoenix_topics_source,
             phoenix_moe_source,
+            sid_source,
             cached_posts_source,
         ];
 
@@ -404,7 +414,7 @@ impl PhoenixCandidatePipeline {
                 enable_fallback_key: "rust_home_mixer_phoenix_enable_fallback",
             },
         });
-        let author_rules = Arc::new(crate::util::author_rules::AuthorRulesEvaluator::new(
+        let author_rules = Arc::new(xai_feature_switches::AuthorRulesEvaluator::new(
             feature_switches,
         ));
         let author_cold_start = crate::scorers::author_cold_start::AuthorColdStart { author_rules };
@@ -873,6 +883,7 @@ impl PhoenixCandidatePipeline {
             phoenix_xds,
             vm_ranker_xds,
             sid_client,
+            ProdSidRetrievalClient::new(vm_ranker_xds) as Arc<dyn SidRetrievalClient>,
         )
         .await
     }
@@ -970,6 +981,7 @@ impl PhoenixCandidatePipeline {
             &super::PhoenixXdsConfig::disabled(),
             &super::VmRankerXdsConfig::disabled_with_healthz(),
             Arc::new(MockSidClient) as Arc<dyn SidClient>,
+            Arc::new(MockSidRetrievalClient) as Arc<dyn SidRetrievalClient>,
         )
         .await
     }

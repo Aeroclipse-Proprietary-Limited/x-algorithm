@@ -124,7 +124,7 @@ lazy_static! {
             "Average pairwise cosine similarity before/after DPP (lower = more diverse)"
         )
         .buckets(vec![-1.0, -0.5, -0.3, -0.2, -0.1, -0.05, 0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.7, 1.0]),
-        &["stage"]  
+        &["stage"]
     )
     .unwrap();
                     pub static ref DPP_TERMINAL_CV: HistogramVec = register_histogram_vec!(
@@ -135,7 +135,7 @@ lazy_static! {
         .buckets(vec![
             1e-12, 1e-10, 1e-8, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.05, 0.1, 0.5, 1.0, 2.0,
         ]),
-        &["reason"]  
+        &["reason"]
     )
     .unwrap();
                 pub static ref DPP_POOL_SIZE: HistogramVec = register_histogram_vec!(

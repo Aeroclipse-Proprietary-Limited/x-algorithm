@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thrift::protocol::{TInputProtocol, TOutputProtocol, TSerializable, TType};
 use xai_core_entities::entities::{
-    EditControl, ExclusiveTweetControl, MediaEntities, MediaEntity, Share, TakedownReason,
+    EditControl, ExclusiveTweetControl, MediaEntities, MediaEntity, TakedownReason,
 };
 use xai_strato::strato_thrift::{strato_decode, StratoResult};
 use xai_strato::{encode, MValCodec, StratoGrpc};
@@ -71,7 +71,6 @@ struct Tweet {
 
 #[derive(Default)]
 struct CoreData {
-    share: Option<Share>,
     nsfw_user: bool,
     nsfw_admin: bool,
     nullcast: bool,
@@ -81,7 +80,6 @@ impl Tweet {
     fn project(self) -> Option<TweetFeatures> {
         let core_data = self.core_data?;
         Some(TweetFeatures {
-            source_tweet_id: core_data.share.map(|share| share.source_tweet_id),
             is_nullcast: core_data.nullcast,
             nsfw: NsfwFeature {
                 user: core_data.nsfw_user,
@@ -185,7 +183,6 @@ fn read_core_data(proto: &mut dyn TInputProtocol) -> thrift::Result<CoreData> {
             break;
         }
         match field.id {
-            Some(7) => core_data.share = Some(Share::from_thrift(proto)),
             Some(9) => core_data.nsfw_user = proto.read_bool()?,
             Some(10) => core_data.nsfw_admin = proto.read_bool()?,
             Some(11) => core_data.nullcast = proto.read_bool()?,
@@ -239,7 +236,6 @@ mod tests {
 
     const TWEET_ID: i64 = 10;
     const AUTHOR_ID: i64 = 7001;
-    const SOURCE_TWEET_ID: i64 = 9;
     const CONVERSATION_AUTHOR_ID: i64 = 7003;
 
     fn field(proto: &mut Proto<'_>, id: i16, ty: TType, value: impl FnOnce(&mut Proto<'_>)) {
@@ -373,7 +369,6 @@ mod tests {
     fn projects_every_read_field_of_a_found_tweet() {
         let bytes = encode_tweet(
             &mut |p| {
-                structure(p, 7, |p| i64_field(p, 1, SOURCE_TWEET_ID));
                 bool_field(p, 9, true);
                 bool_field(p, 10, false);
                 bool_field(p, 11, true);
@@ -417,7 +412,6 @@ mod tests {
         assert_eq!(
             decode_fixture(&bytes),
             TweetFeatures {
-                source_tweet_id: Some(SOURCE_TWEET_ID as u64),
                 media,
                 takedown_reasons: vec![TakedownReason::Dmca],
                 nsfw: NsfwFeature {
@@ -521,18 +515,18 @@ mod tests {
     }
 
     #[test]
-    fn truncated_share_is_an_error_not_a_panic() {
-        let bytes = encode_tweet(
-            &mut |p| structure(p, 7, |p| i64_field(p, 1, SOURCE_TWEET_ID)),
-            &mut |_| {},
-        );
+    fn a_panicking_sub_reader_is_an_error_not_a_panic() {
+        let bytes = encode_tweet(&mut |_| {}, &mut |p| {
+            structure(p, 155, |p| i64_field(p, 1, CONVERSATION_AUTHOR_ID))
+        });
         let end = bytes
             .windows(8)
-            .position(|window| window == SOURCE_TWEET_ID.to_be_bytes())
+            .position(|window| window == CONVERSATION_AUTHOR_ID.to_be_bytes())
             .unwrap()
             + 4;
 
-        assert!(decode_tweet(&bytes[..end]).is_err());
+        let error = decode_tweet(&bytes[..end]).unwrap_err();
+        assert_eq!(error.to_string(), "MVal decoder panicked");
     }
 
     #[test]

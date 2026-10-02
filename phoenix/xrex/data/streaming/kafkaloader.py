@@ -1154,8 +1154,8 @@ class PhoenixKafkaDataset(PhoenixDataset):
                     "If you are trying to recover from an outage in production, and are tempted to set reset_to_latest=True, then remember: you must harvest one checkpoint and restart training with reset_to_latest=False and i_know_what_i_am_doing=False"
                 )
 
-        example_queue: queue.Queue[tuple[RecsysFeaturesBatch, dict[int, int]]] = queue.Queue(
-            maxsize=self.max_queue_size
+        example_queue: queue.Queue[tuple[RecsysFeaturesBatch, dict[int, int]] | Exception] = (
+            queue.Queue(maxsize=self.max_queue_size)
         )
         consumer = threading.Thread(
             target=self._async_kafka_consumer_arrow,
@@ -1190,7 +1190,10 @@ class PhoenixKafkaDataset(PhoenixDataset):
                         example_queue.qsize()
                     )
 
-                batch, offsets = example_queue.get(timeout=1.0)
+                item = example_queue.get(timeout=1.0)
+                if isinstance(item, Exception):
+                    raise item
+                batch, offsets = item
                 self.offset_ptr.update(offsets)
                 consecutive_empty_count = 0
 
@@ -1293,7 +1296,7 @@ class PhoenixKafkaDataset(PhoenixDataset):
 
     def _async_kafka_consumer_arrow(
         self,
-        example_queue: queue.Queue[tuple[RecsysFeaturesBatch, dict[int, int]]],
+        example_queue: queue.Queue[tuple[RecsysFeaturesBatch, dict[int, int]] | Exception],
         batch_size: int,
         shard_index: int,
         num_shards: int,

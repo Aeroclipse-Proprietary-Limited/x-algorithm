@@ -23,15 +23,17 @@ impl GetSafetyLabelsEndpoint {
         &self,
         request: Request<vf_pb::GetSafetyLabelsRequest>,
     ) -> Result<Response<vf_pb::GetSafetyLabelsResponse>, Status> {
-        caller_identity::record(Endpoint::GetSafetyLabels, &request);
+        let caller = caller_identity::record(Endpoint::GetSafetyLabels, &request);
         let request_metrics = RequestMetricsGuard::new();
         match self.handle_inner(request).await {
             Ok(response) => {
                 request_metrics.mark_success();
+                caller.mark_success();
                 Ok(response)
             }
             Err(status) => {
                 request_metrics.mark_failure();
+                caller.mark_failure();
                 Err(status)
             }
         }

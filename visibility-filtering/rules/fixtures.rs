@@ -324,7 +324,7 @@ impl CandidateBuilder {
     }
 
     pub(crate) fn retweet_of(mut self, source_tweet_id: u64) -> Self {
-        self.candidate.tweet_features.source_tweet_id = Some(source_tweet_id);
+        self.candidate.source_tweet_id = Some(source_tweet_id);
         self
     }
 
