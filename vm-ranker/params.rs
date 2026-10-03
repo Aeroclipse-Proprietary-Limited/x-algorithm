@@ -167,6 +167,12 @@ param!(
     false
 );
 param!(
+    AuthorExplorationBonus,
+    f64,
+    "rust_home_mixer_author_exploration_bonus",
+    0.0
+);
+param!(
     TopicOonWeightFactor,
     f64,
     "rust_home_mixer_topic_oon_weight_factor",

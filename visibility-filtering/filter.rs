@@ -250,7 +250,10 @@ mod tests {
     }
 
     fn service(sources: &Arc<InMemorySources>) -> FilterTweets {
-        FilterTweets::new(sources.clone(), RuleEngine::for_tests())
+        FilterTweets::new(
+            Arc::<InMemorySources>::clone(sources),
+            RuleEngine::for_tests(),
+        )
     }
 
     #[tokio::test(start_paused = true)]

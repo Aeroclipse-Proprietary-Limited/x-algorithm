@@ -13,7 +13,7 @@ const REVERSE_EDGE_CHUNK_SIZE: usize = 500;
 
 const FLOCK_APERTURE_SIZE: usize = 12;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, strum::IntoStaticStr)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, strum::IntoStaticStr, strum::VariantArray)]
 #[strum(serialize_all = "snake_case")]
 pub enum Graph {
     Follows = 1,
@@ -23,7 +23,7 @@ pub enum Graph {
     SuperFollows = 55,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::VariantArray)]
 pub enum EdgeDirection {
     Forward,
     Reverse,

@@ -117,7 +117,19 @@ fn legacy_drop_reason(reason: &FilteredReason) -> Option<ThriftFilteredReason> {
         FilteredReason::AuthorBlockViewer => T::AuthorBlockViewer(true),
         FilteredReason::AuthorIsProtected => T::AuthorIsProtected(true),
         FilteredReason::AuthorIsSuspended => T::AuthorIsSuspended(true),
-        _ => return None,
+        FilteredReason::ContainNsfwMedia
+        | FilteredReason::PossiblyUndesirable
+        | FilteredReason::UnspecifiedReason
+        | FilteredReason::AuthorAccountIsInactive
+        | FilteredReason::AuthorIsUnsafe
+        | FilteredReason::ReportedTweet
+        | FilteredReason::TweetMatchesViewerMutedKeyword(_)
+        | FilteredReason::SafetyResult(_)
+        | FilteredReason::AuthorIsDeactivated
+        | FilteredReason::ViewerMutesAuthor
+        | FilteredReason::TweetIsNullcast
+        | FilteredReason::ExclusiveTweet
+        | FilteredReason::ViewerBlocksAuthor => return None,
     })
 }
 

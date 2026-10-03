@@ -260,9 +260,10 @@ where
         let multipliers = post_fusion_multipliers(weights, ctx, candidates, &weighted);
         let pre_offset_scaled: Vec<f64> = weighted
             .iter()
+            .zip(candidates)
             .zip(&multipliers)
-            .map(|(&weighted, m)| {
-                let net = unoffset_score(weighted, weights);
+            .map(|((&weighted, c), m)| {
+                let net = unoffset_score(weighted, weights) + c.author_exploration_bonus;
                 let scaled = if net >= 0.0 { m.combined() * net } else { net };
                 offset_score(scaled, weights)
             })
@@ -271,7 +272,12 @@ where
         return ValueScores { weighted, scores };
     }
 
-    let adjusted = adjust_base_scores(&weighted);
+    let base: Vec<f64> = weighted
+        .iter()
+        .zip(candidates)
+        .map(|(&w, c)| add_exploration_bonus(w, c.author_exploration_bonus, weights))
+        .collect();
+    let adjusted = adjust_base_scores(&base);
     let multipliers = post_fusion_multipliers(weights, ctx, candidates, &adjusted);
     let scores = adjusted
         .iter()
@@ -279,6 +285,13 @@ where
         .map(|(&s, m)| m.apply(s))
         .collect();
     ValueScores { weighted, scores }
+}
+
+fn add_exploration_bonus(weighted: f64, bonus: f64, weights: &ValueModelWeights) -> f64 {
+    if bonus == 0.0 {
+        return weighted;
+    }
+    offset_score(unoffset_score(weighted, weights) + bonus, weights)
 }
 
 #[cfg(test)]

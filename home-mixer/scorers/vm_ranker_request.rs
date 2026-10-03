@@ -9,12 +9,14 @@ const DPP_VALUE_MODEL_ID: &str = "dpp";
 
 pub(crate) struct RequestShape {
     debias: bool,
+    pacing: bool,
 }
 
 impl RequestShape {
     pub(crate) fn from_query(query: &ScoredPostsQuery) -> Self {
         Self {
             debias: !query.has_cached_posts && query.params.get(VMRankerSendDebiasInputs),
+            pacing: query.params.get(VMRankerSendPacingInputs),
         }
     }
 
@@ -60,8 +62,8 @@ impl RequestShape {
             weighted_score: c.weighted_score,
             ..Default::default()
         };
-        if self.debias {
-            out.experiment_payload = candidate_payload(c).into();
+        if self.debias || self.pacing {
+            out.experiment_payload = candidate_payload(c, self.debias, self.pacing).into();
         }
         out
     }

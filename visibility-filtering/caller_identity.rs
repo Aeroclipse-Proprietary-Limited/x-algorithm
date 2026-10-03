@@ -84,19 +84,25 @@ pub(crate) fn record<T>(endpoint: Endpoint, request: &Request<T>) -> CallerReque
 fn identity_from_der(der: &[u8]) -> Option<String> {
     let (_, cert) = parse_x509_certificate(der).ok()?;
     let san = cert.subject_alternative_name().ok().flatten();
-    san.and_then(|san| {
-        san.value.general_names.iter().find_map(|name| match name {
-            GeneralName::URI(uri) if uri.starts_with(S2S_IDENTITY_PREFIX) => Some(*uri),
-            _ => None,
+    san.and_then(|san| san.value.general_names.iter().find_map(s2s_identity_uri))
+        .or_else(|| {
+            cert.subject()
+                .iter_common_name()
+                .filter_map(|cn| cn.as_str().ok())
+                .find(|cn| cn.starts_with(S2S_IDENTITY_PREFIX))
         })
-    })
-    .or_else(|| {
-        cert.subject()
-            .iter_common_name()
-            .filter_map(|cn| cn.as_str().ok())
-            .find(|cn| cn.starts_with(S2S_IDENTITY_PREFIX))
-    })
-    .map(str::to_string)
+        .map(str::to_string)
+}
+
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "GeneralName is x509-parser's SAN enum; only a URI name carries an S2S identity, so every other kind is skipped, including any the crate adds"
+)]
+fn s2s_identity_uri<'a>(name: &GeneralName<'a>) -> Option<&'a str> {
+    match name {
+        GeneralName::URI(uri) if uri.starts_with(S2S_IDENTITY_PREFIX) => Some(*uri),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

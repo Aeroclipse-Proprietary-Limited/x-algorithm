@@ -2,9 +2,11 @@
 # Copyright 2026 X.AI Corp.
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import jax
+import jax.numpy as jnp
 from jax import shard_map
 from jax.sharding import PartitionSpec as P
 
@@ -27,6 +29,15 @@ def table_spec(context_handle: ContextHandle) -> P:
     if is_row_sharded(context_handle):
         return P(context_handle.table_axis, None)
     return P(None, context_handle.table_axis)
+
+
+def _data_shards(context_handle: ContextHandle) -> int:
+    return math.prod(context_handle.mesh.shape[axis] for axis in context_handle.data_axis)
+
+
+def _rows_spec(context_handle: ContextHandle, ndim: int, rows_axis: int) -> P:
+    rows_axis = max(ndim + rows_axis, 0)
+    return P(*(context_handle.data_axis if i == rows_axis else None for i in range(ndim)))
 
 
 def kernel_bindings(context_handle: ContextHandle):
@@ -57,30 +68,40 @@ def lookup_start(
 
     @shard_map(
         mesh=context_handle.mesh,
-        in_specs=(P(context_handle.data_axis, None), spec, P()),
+        in_specs=(_rows_spec(context_handle, token_ids.ndim, -2), spec, P()),
         out_specs=(spec, P(context_handle.data_axis, None)),
         check_vma=False,
     )
     def start(
         token_ids: jax.Array, table: jax.Array, gate: jax.Array
     ) -> tuple[jax.Array, jax.Array]:
+        token_ids = token_ids.reshape(-1, token_ids.shape[-1])
         table_out, lookup_pin = bindings.lookup_start(token_ids, table, gate, context_handle)
         return table_out, lookup_pin[None, :]
 
     return start(token_ids, table, gate)
 
 
-def lookup_done(context_handle: ContextHandle, lookup_pin: jax.Array) -> jax.Array:
+def lookup_done(
+    context_handle: ContextHandle,
+    lookup_pin: jax.Array,
+    token_ids_shape: tuple[int, ...] | None = None,
+) -> jax.Array:
     bindings = kernel_bindings(context_handle)
+    local_shape = (-1, context_handle.emb_width)
+    if token_ids_shape is not None:
+        *leading, users, tokens = token_ids_shape
+        users //= _data_shards(context_handle)
+        local_shape = (*leading, users, tokens, context_handle.emb_width)
 
     @shard_map(
         mesh=context_handle.mesh,
         in_specs=(P(context_handle.data_axis, None),),
-        out_specs=P(context_handle.data_axis, None),
+        out_specs=_rows_spec(context_handle, len(local_shape), -3),
         check_vma=False,
     )
     def done(lookup_pin: jax.Array) -> jax.Array:
-        return bindings.lookup_done(lookup_pin, context_handle)
+        return bindings.lookup_done(lookup_pin, context_handle).reshape(local_shape)
 
     return done(lookup_pin)
 
@@ -98,6 +119,20 @@ def depend(context_handle: ContextHandle, x: jax.Array, pin: jax.Array) -> jax.A
     return add_pin(x, pin)
 
 
+def zero_pin(context_handle: ContextHandle, x: jax.Array) -> jax.Array:
+    @shard_map(
+        mesh=context_handle.mesh,
+        in_specs=P(context_handle.data_axis),
+        out_specs=P(),
+        check_vma=False,
+    )
+    def pin(x: jax.Array) -> jax.Array:
+        first = x.reshape(-1)[:1].astype(jnp.float32)
+        return jnp.where(jnp.isfinite(first), first, 0.0) * 0.0
+
+    return pin(x)
+
+
 def stage_update(
     context_handle: ContextHandle,
     grads: jax.Array,
@@ -112,11 +147,12 @@ def stage_update(
 
         @shard_map(
             mesh=context_handle.mesh,
-            in_specs=(P(context_handle.data_axis, None), P(), P()),
+            in_specs=(_rows_spec(context_handle, grads.ndim, -3), P(), P()),
             out_specs=P(context_handle.data_axis, None),
             check_vma=False,
         )
         def stage_rows(grads: jax.Array, pending: jax.Array, gate: jax.Array) -> jax.Array:
+            grads = grads.reshape(-1, grads.shape[-1])
             pin = bindings.stage_update(grads, pending, gate, context_handle)
             return pin[None, :]
 
@@ -125,8 +161,8 @@ def stage_update(
     @shard_map(
         mesh=context_handle.mesh,
         in_specs=(
-            P(context_handle.data_axis, None),
-            P(context_handle.data_axis),
+            _rows_spec(context_handle, grads.ndim, -3),
+            _rows_spec(context_handle, segment_ids.ndim, -2),
             P(),
             P(),
             P(),
@@ -142,7 +178,12 @@ def stage_update(
         gate: jax.Array,
     ) -> jax.Array:
         pin = bindings.stage_update(
-            grads, segment_ids, unique_tokens, pending, gate, context_handle
+            grads.reshape(-1, grads.shape[-1]),
+            segment_ids.reshape(-1),
+            unique_tokens,
+            pending,
+            gate,
+            context_handle,
         )
         return pin[None, :]
 

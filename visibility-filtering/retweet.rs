@@ -312,7 +312,7 @@ mod tests {
         }
     }
 
-        fn retweet_world(share_names_author: bool) -> InMemorySources {
+    fn retweet_world(share_names_author: bool) -> InMemorySources {
         let shared = |author_id, source_tweet_id, source_user_id| PureCoreData {
             source_user_id: Some(source_user_id).filter(|_| share_names_author),
             ..retweet(author_id, source_tweet_id, source_user_id)
@@ -354,7 +354,7 @@ mod tests {
         Source::SafetyLabels,
     ];
 
-        fn batches(sources: &InMemorySources) -> String {
+    fn batches(sources: &InMemorySources) -> String {
         let mut lines: Vec<String> = TWEET_KEYED
             .into_iter()
             .chain([Source::GizmoduckViewer, Source::GizmoduckAuthor])
@@ -380,7 +380,7 @@ mod tests {
         lines.join("\n")
     }
 
-        #[tokio::test]
+    #[tokio::test]
     async fn sources_join_unsent_calls_and_sent_calls_follow_with_only_new_keys() {
         let not_a_reply = || {
             retweet_world(true).pure_core(
@@ -460,7 +460,10 @@ Flock follows-rev[80] super_follows-fwd[]",
         ];
         for (name, world, tweet_ids, expected) in rows {
             let sources = Arc::new(world);
-            let filter_tweets = FilterTweets::new(sources.clone(), RuleEngine::for_tests());
+            let filter_tweets = FilterTweets::new(
+                Arc::<InMemorySources>::clone(&sources),
+                RuleEngine::for_tests(),
+            );
             let outcomes = evaluate_merging_sources(&filter_tweets, request(tweet_ids)).await;
             assert_eq!(batches(&sources), expected, "{name}");
             assert_no_key_asked_twice(&sources, name);
@@ -473,18 +476,24 @@ Flock follows-rev[80] super_follows-fwd[]",
         }
         for tweet_ids in [&[2][..], &[1, 2, 3, 5]] {
             let plain = Arc::new(retweet_world(true));
-            FilterTweets::new(plain.clone(), RuleEngine::for_tests())
-                .hydrate(request(tweet_ids))
-                .await;
+            FilterTweets::new(
+                Arc::<InMemorySources>::clone(&plain),
+                RuleEngine::for_tests(),
+            )
+            .hydrate(request(tweet_ids))
+            .await;
             let merged = Arc::new(retweet_world(true));
-            let filter_tweets = FilterTweets::new(merged.clone(), RuleEngine::for_tests());
+            let filter_tweets = FilterTweets::new(
+                Arc::<InMemorySources>::clone(&merged),
+                RuleEngine::for_tests(),
+            );
             evaluate_merging_sources(&filter_tweets, request(tweet_ids)).await;
             assert_eq!(merged.calls(), plain.calls(), "{tweet_ids:?}");
             assert_eq!(batches(&merged), batches(&plain), "{tweet_ids:?}");
         }
     }
 
-        fn assert_no_key_asked_twice(sources: &InMemorySources, name: &str) {
+    fn assert_no_key_asked_twice(sources: &InMemorySources, name: &str) {
         let mut asked: HashSet<String> = HashSet::new();
         for source in TWEET_KEYED
             .into_iter()
@@ -505,7 +514,7 @@ Flock follows-rev[80] super_follows-fwd[]",
         }
     }
 
-        fn starts(sources: &InMemorySources, t0: tokio::time::Instant) -> Vec<Vec<Duration>> {
+    fn starts(sources: &InMemorySources, t0: tokio::time::Instant) -> Vec<Vec<Duration>> {
         TWEET_KEYED
             .into_iter()
             .chain([
@@ -535,20 +544,26 @@ Flock follows-rev[80] super_follows-fwd[]",
             .latency(Source::Flock, ms(10))
     }
 
-        #[tokio::test(start_paused = true)]
+    #[tokio::test(start_paused = true)]
     async fn requested_calls_start_as_they_do_without_sources() {
         let ms = Duration::from_millis;
         for share_names_author in [true, false] {
             let alone = Arc::new(slow_world(share_names_author));
             let t0 = tokio::time::Instant::now();
-            FilterTweets::new(alone.clone(), RuleEngine::for_tests())
-                .hydrate(request(&[1, 2, 3, 4]))
-                .await;
+            FilterTweets::new(
+                Arc::<InMemorySources>::clone(&alone),
+                RuleEngine::for_tests(),
+            )
+            .hydrate(request(&[1, 2, 3, 4]))
+            .await;
             let alone = starts(&alone, t0);
 
             let expanded = Arc::new(slow_world(share_names_author));
             let t0 = tokio::time::Instant::now();
-            let filter_tweets = FilterTweets::new(expanded.clone(), RuleEngine::for_tests());
+            let filter_tweets = FilterTweets::new(
+                Arc::<InMemorySources>::clone(&expanded),
+                RuleEngine::for_tests(),
+            );
             evaluate_merging_sources(&filter_tweets, request(&[1, 2, 3, 4])).await;
             let elapsed = t0.elapsed();
             let expanded = starts(&expanded, t0);
@@ -574,7 +589,7 @@ Flock follows-rev[80] super_follows-fwd[]",
         }
     }
 
-        #[tokio::test(start_paused = true)]
+    #[tokio::test(start_paused = true)]
     async fn a_source_failure_fails_only_its_retweets() {
         use crate::hydration::HYDRATION_TIMEOUT;
         use EvaluationStatus::{Evaluated, Failed};
@@ -636,7 +651,10 @@ Flock follows-rev[80] super_follows-fwd[]",
         ];
         for (name, world, expected, elapsed) in rows {
             let sources = Arc::new(world);
-            let filter_tweets = FilterTweets::new(sources.clone(), RuleEngine::for_tests());
+            let filter_tweets = FilterTweets::new(
+                Arc::<InMemorySources>::clone(&sources),
+                RuleEngine::for_tests(),
+            );
             let t0 = tokio::time::Instant::now();
             let outcomes = evaluate_merging_sources(&filter_tweets, request(&[1, 2, 3, 4])).await;
             assert_eq!(t0.elapsed(), elapsed, "{name}");
@@ -646,7 +664,7 @@ Flock follows-rev[80] super_follows-fwd[]",
         }
     }
 
-        #[tokio::test(start_paused = true)]
+    #[tokio::test(start_paused = true)]
     async fn a_requested_key_asked_by_a_source_batch_shares_its_fate() {
         use EvaluationStatus::{Evaluated, Failed};
         let ms = Duration::from_millis;
@@ -663,7 +681,10 @@ Flock follows-rev[80] super_follows-fwd[]",
             ),
         ] {
             let sources = Arc::new(world);
-            let filter_tweets = FilterTweets::new(sources.clone(), RuleEngine::for_tests());
+            let filter_tweets = FilterTweets::new(
+                Arc::<InMemorySources>::clone(&sources),
+                RuleEngine::for_tests(),
+            );
             let t0 = tokio::time::Instant::now();
             let outcomes = evaluate_merging_sources(&filter_tweets, request(&[1, 2, 3, 4])).await;
             let statuses: Vec<EvaluationStatus> =
@@ -687,12 +708,15 @@ Flock follows-rev[80] super_follows-fwd[]",
         }
     }
 
-        #[tokio::test]
+    #[tokio::test]
     async fn the_source_of_a_failed_retweet_changes_no_verdict() {
         let world = || retweet_world(true).fail_key(Source::TesTweet, 4);
         let judged = |world: InMemorySources| async move {
             let sources = Arc::new(world);
-            let filter_tweets = FilterTweets::new(sources.clone(), RuleEngine::for_tests());
+            let filter_tweets = FilterTweets::new(
+                Arc::<InMemorySources>::clone(&sources),
+                RuleEngine::for_tests(),
+            );
             let outcomes = evaluate_merging_sources(&filter_tweets, request(&[1, 2, 3, 4])).await;
             assert_eq!(
                 sources.keys(Source::TesPureCore),
@@ -715,7 +739,7 @@ Flock follows-rev[80] super_follows-fwd[]",
         }
     }
 
-        #[tokio::test(start_paused = true)]
+    #[tokio::test(start_paused = true)]
     async fn a_root_follows_the_viewer_by_the_select_that_asked_it() {
         use ConversationControlArm::{MyNetwork, Subscribers};
         let sources = Arc::new(
@@ -725,7 +749,10 @@ Flock follows-rev[80] super_follows-fwd[]",
                 .edge(Graph::Follows, 90, 1)
                 .key_latency(Source::TesConversationControl, 2, Duration::from_millis(30)),
         );
-        let filter_tweets = FilterTweets::new(sources.clone(), RuleEngine::for_tests());
+        let filter_tweets = FilterTweets::new(
+            Arc::<InMemorySources>::clone(&sources),
+            RuleEngine::for_tests(),
+        );
         let outcomes = evaluate_merging_sources(&filter_tweets, request(&[1, 2, 3, 4])).await;
         assert!(
             outcomes
@@ -747,7 +774,7 @@ Flock follows-rev[80] super_follows-fwd[]",
         assert!(sources.keys(Source::Wingman).is_empty());
     }
 
-        #[tokio::test]
+    #[tokio::test]
     async fn each_request_kind_labels_its_phase_samples() {
         use crate::rules::metrics::RetweetSources::{Fetched, InBatch, NoSource};
         let filter_tweets =

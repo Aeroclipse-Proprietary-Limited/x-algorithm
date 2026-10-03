@@ -1,9 +1,10 @@
-use crate::config::{ENV_APP_ENV, ENV_DUAL_CALL_HARNESS_ENABLED, dual_call_harness_enabled};
-use crate::filter::{FilterOutcome, FilterTweets};
+use crate::config::{ENV_APP_ENV, ENV_REFERENCE, parse_env_flag};
+use crate::filter::FilterTweets;
+use crate::filter_tweets::{Comparator, FinishComparison};
 use crate::params::ClientSwitches;
-use crate::reference_compare::{ReferenceCompareHarness, TweetVerdict, VerdictSender};
 use crate::rules::SafetyLevel;
 use crate::server_deps::init_client_with_retry;
+use crate::staging::reference_compare::{ReferenceCompareHarness, TweetVerdict};
 use std::env;
 use std::sync::Arc;
 use strum::VariantNames;
@@ -12,9 +13,10 @@ use tweetypie::TweetypieReference;
 use xai_core_entities::s2s::{S2S_CHAIN_PATH, S2S_CRT_PATH, S2S_KEY_PATH};
 use xai_visibility_filtering::vf_client::{StratoVfClient, VfClient};
 
-mod tweetypie;
+pub(crate) mod tweetypie;
 
-pub const ENV_REFERENCE: &str = "VF_REFERENCE";
+const ENV_DUAL_CALL_HARNESS_ENABLED: &str = "VF_DUAL_CALL_HARNESS_ENABLED";
+pub const ENV_IMAGE: &str = "VF_IMAGE";
 pub const ENV_TWEETYPIE_XDS_LISTENER: &str = "VF_TWEETYPIE_XDS_LISTENER";
 pub const ENV_TWEETYPIE_TLS_DOMAIN: &str = "VF_TWEETYPIE_TLS_DOMAIN";
 pub const ENV_TWEETYPIE_CLIENT_ID: &str = "VF_TWEETYPIE_CLIENT_ID";
@@ -60,7 +62,7 @@ impl Reference {
 fn reference() -> Reference {
     Reference::resolve(
         env::var(ENV_REFERENCE).ok().as_deref(),
-        dual_call_harness_enabled(),
+        parse_env_flag(env::var(ENV_DUAL_CALL_HARNESS_ENABLED).ok().as_deref()),
         env::var(ENV_APP_ENV).ok().as_deref(),
     )
     .unwrap_or_else(|misconfiguration| panic!("{misconfiguration}"))
@@ -71,17 +73,14 @@ pub(crate) async fn build(
     init_deadline: Instant,
     filter_tweets: &Arc<FilterTweets>,
     client_switches: &ClientSwitches,
-) -> Option<ReferenceComparator> {
-    let engine = match reference() {
-        Reference::None => return None,
-        Reference::VfService => {
-            Engine::VfService(build_vf_service(datacenter, init_deadline).await)
-        }
-        Reference::Tweetypie => Engine::Tweetypie(
+) -> Option<Box<dyn Comparator>> {
+    match reference() {
+        Reference::None => None,
+        Reference::VfService => Some(Box::new(build_vf_service(datacenter, init_deadline).await)),
+        Reference::Tweetypie => Some(Box::new(
             tweetypie::build(init_deadline, filter_tweets, client_switches.clone()).await,
-        ),
-    };
-    Some(ReferenceComparator(engine))
+        )),
+    }
 }
 
 #[expect(
@@ -117,55 +116,17 @@ async fn build_vf_service(
     Arc::new(ReferenceCompareHarness::new(strato, datacenter))
 }
 
-pub(crate) struct ReferenceComparator(Engine);
-
-enum Engine {
-    VfService(Arc<ReferenceCompareHarness>),
-    Tweetypie(Arc<TweetypieReference>),
-}
-
-pub(crate) struct PendingComparison(Pending);
-
-enum Pending {
-    VfService(VerdictSender),
-    Tweetypie {
-        reference: Arc<TweetypieReference>,
-        viewer_id: Option<u64>,
-        country_code: Option<String>,
-        safety_level: SafetyLevel,
-    },
-}
-
-impl ReferenceComparator {
-    pub(crate) fn begin_compare(
+impl Comparator for Arc<ReferenceCompareHarness> {
+    fn begin(
         &self,
         viewer_id: Option<u64>,
         country_code: Option<String>,
         safety_level: SafetyLevel,
         tweet_ids: Vec<u64>,
-    ) -> Option<PendingComparison> {
-        let pending = match &self.0 {
-            Engine::VfService(harness) => Pending::VfService(harness.begin_compare(
-                viewer_id,
-                country_code,
-                safety_level,
-                tweet_ids,
-            )?),
-            Engine::Tweetypie(reference) => Pending::Tweetypie {
-                reference: Arc::clone(reference),
-                viewer_id,
-                country_code,
-                safety_level,
-            },
-        };
-        Some(PendingComparison(pending))
-    }
-}
-
-impl PendingComparison {
-    pub(crate) fn send(self, outcomes: &[FilterOutcome]) {
-        match self.0 {
-            Pending::VfService(verdicts) => verdicts.send(
+    ) -> Option<FinishComparison> {
+        let verdicts = self.begin_compare(viewer_id, country_code, safety_level, tweet_ids)?;
+        Some(Box::new(move |outcomes| {
+            verdicts.send(
                 outcomes
                     .iter()
                     .map(|outcome| TweetVerdict {
@@ -173,21 +134,23 @@ impl PendingComparison {
                         verdict: outcome.verdict.clone(),
                     })
                     .collect(),
-            ),
-            Pending::Tweetypie {
-                reference,
-                viewer_id,
-                country_code,
-                safety_level,
-            } => reference.spawn(viewer_id, country_code, safety_level, outcomes),
-        }
+            );
+        }))
     }
 }
 
-#[cfg(test)]
-impl From<Arc<ReferenceCompareHarness>> for ReferenceComparator {
-    fn from(harness: Arc<ReferenceCompareHarness>) -> Self {
-        Self(Engine::VfService(harness))
+impl Comparator for Arc<TweetypieReference> {
+    fn begin(
+        &self,
+        viewer_id: Option<u64>,
+        country_code: Option<String>,
+        safety_level: SafetyLevel,
+        _tweet_ids: Vec<u64>,
+    ) -> Option<FinishComparison> {
+        let reference = Arc::clone(self);
+        Some(Box::new(move |outcomes| {
+            reference.spawn(viewer_id, country_code, safety_level, outcomes);
+        }))
     }
 }
 

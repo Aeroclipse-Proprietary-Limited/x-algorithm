@@ -69,7 +69,7 @@ impl SafetyLabelSource {
         let remote_results = self.remote.get(&local_misses).await;
         self.backfill_local(remote_results, &mut results);
 
-        self.emit_stats(total - batch_size, batch_size, expired);
+        Self::emit_stats(total - batch_size, batch_size, expired);
 
         results
     }
@@ -113,7 +113,7 @@ impl SafetyLabelSource {
         }
     }
 
-    fn emit_stats(&self, hits: usize, batch_size: usize, expired: usize) {
+    fn emit_stats(hits: usize, batch_size: usize, expired: usize) {
         metrics::record_cache_keys(CacheTier::Local, CacheResult::Hit, hits);
         metrics::record_cache_keys(CacheTier::Local, CacheResult::Miss, batch_size - expired);
         metrics::record_cache_keys(CacheTier::Local, CacheResult::Expired, expired);
@@ -219,7 +219,7 @@ mod tests {
         let remote_keys = Arc::new(AtomicUsize::new(0));
         let twemcache = Arc::new(TwemcacheSource::with_cache(Arc::new(FakeTwemcache {
             results: cache_results,
-            fetched_keys: remote_keys.clone(),
+            fetched_keys: Arc::clone(&remote_keys),
         })));
         let manhattan = Arc::new(ManhattanSource::new(fetcher));
         let remote = Arc::new(RemoteSource::new(twemcache, manhattan));

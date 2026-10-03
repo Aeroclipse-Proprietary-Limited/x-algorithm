@@ -19,8 +19,16 @@ pub(super) const NSFW_HIGH_PRECISION_REASON: FilteredReason =
         action: Action::Drop(xai_visibility_filtering::models::DropReason {}),
     });
 
+const fn has_tweet_label(label: SafetyLabelType) -> Predicate {
+    Predicate::Tweet(TweetPredicate::HasSafetyLabel(label))
+}
+
+const fn has_user_label(label: AuthorLabel) -> Predicate {
+    Predicate::Author(AuthorPredicate::HasUserLabel(label))
+}
+
 const fn label(label: SafetyLabelType) -> Condition {
-    Condition::Holds(Predicate::Tweet(TweetPredicate::HasSafetyLabel(label)))
+    Condition::Holds(has_tweet_label(label))
 }
 
 const fn tweet(leaf: TweetPredicate) -> Condition {
@@ -46,15 +54,9 @@ const IN_NSFW_GATING_COUNTRY: Condition = viewer(ViewerPredicate::AccountOrReque
     CountryList::NsfwGating,
 ));
 const NSFW_MEDIA_LABEL: Condition = Condition::AnyOf(&[
-    Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-        SafetyLabelType::NSFW_HIGH_PRECISION,
-    )),
-    Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-        SafetyLabelType::NSFW_HIGH_RECALL,
-    )),
-    Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-        SafetyLabelType::GORE_AND_VIOLENCE_HIGH_PRECISION,
-    )),
+    has_tweet_label(SafetyLabelType::NSFW_HIGH_PRECISION),
+    has_tweet_label(SafetyLabelType::NSFW_HIGH_RECALL),
+    has_tweet_label(SafetyLabelType::GORE_AND_VIOLENCE_HIGH_PRECISION),
 ]);
 const NSFW_FLAGGED: Condition = Condition::AnyOf(&[
     Predicate::Author(AuthorPredicate::IsNsfwUser),
@@ -63,10 +65,8 @@ const NSFW_FLAGGED: Condition = Condition::AnyOf(&[
     Predicate::Tweet(TweetPredicate::NsfwAdminFlag),
 ]);
 const NSFW_TEXT_OR_CARD_LABEL: Condition = Condition::AnyOf(&[
-    Predicate::Tweet(TweetPredicate::HasSafetyLabel(SafetyLabelType::NSFW_TEXT)),
-    Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-        SafetyLabelType::NSFW_CARD_IMAGE,
-    )),
+    has_tweet_label(SafetyLabelType::NSFW_TEXT),
+    has_tweet_label(SafetyLabelType::NSFW_CARD_IMAGE),
 ]);
 const HAS_EXCLUSIVE_CONTENT: Condition = tweet(TweetPredicate::HasExclusiveContent);
 const NOT_CONVERSATION_AUTHOR: Condition = Condition::Not(Predicate::Relationship(
@@ -160,28 +160,43 @@ fn label_drop(id: RuleId, label_type: SafetyLabelType, reason: FilteredReason) -
     rule(id, except_author([label(label_type)], drop_post(reason)))
 }
 
-pub(super) fn fosnr_level_3_drops() -> Vec<RuleClause> {
-    use SafetyLabelType as L;
-    let undesirable = FilteredReason::PossiblyUndesirable;
+const FOSNR_LEVEL_3: [(RuleId, SafetyLabelType); 4] = [
+    (
+        RuleId::FosnrHatefulConduct,
+        SafetyLabelType::FOSNR_HATEFUL_CONDUCT,
+    ),
+    (
+        RuleId::FosnrViolentSpeech,
+        SafetyLabelType::FOSNR_VIOLENT_SPEECH,
+    ),
+    (RuleId::FosnrAbuse, SafetyLabelType::FOSNR_ABUSE),
+    (
+        RuleId::FosnrCivicIntegrity,
+        SafetyLabelType::FOSNR_CIVIC_INTEGRITY,
+    ),
+];
+
+const FOSNR_LEVEL_1: SafetyLabelType = SafetyLabelType::FOSNR_ABUSE_INSULTS;
+
+const FOSNR: [Predicate; 5] = {
+    let [(_, hateful_conduct), (_, violent_speech), (_, abuse), (_, civic_integrity)] =
+        FOSNR_LEVEL_3;
     [
-        label_drop(
-            RuleId::FosnrHatefulConduct,
-            L::FOSNR_HATEFUL_CONDUCT,
-            undesirable.clone(),
-        ),
-        label_drop(
-            RuleId::FosnrViolentSpeech,
-            L::FOSNR_VIOLENT_SPEECH,
-            undesirable.clone(),
-        ),
-        label_drop(RuleId::FosnrAbuse, L::FOSNR_ABUSE, undesirable.clone()),
-        label_drop(
-            RuleId::FosnrCivicIntegrity,
-            L::FOSNR_CIVIC_INTEGRITY,
-            undesirable,
-        ),
+        has_tweet_label(hateful_conduct),
+        has_tweet_label(violent_speech),
+        has_tweet_label(abuse),
+        has_tweet_label(civic_integrity),
+        has_tweet_label(FOSNR_LEVEL_1),
     ]
-    .concat()
+};
+
+pub(super) fn fosnr_level_3_drops() -> Vec<RuleClause> {
+    FOSNR_LEVEL_3
+        .into_iter()
+        .flat_map(|(id, label_type)| {
+            label_drop(id, label_type, FilteredReason::PossiblyUndesirable)
+        })
+        .collect()
 }
 
 const NSFW_HIGH_PRECISION_CHANGED_AT: u64 = 1705536000000;
@@ -261,6 +276,7 @@ fn age_gated_blurs(reason: InterstitialReason) -> [Clause; 3] {
     ]
 }
 
+#[derive(Clone, Copy)]
 enum Rungs {
     All,
     UpdateApp,
@@ -594,7 +610,7 @@ pub(super) fn fosnr_level_1_non_follower_drop() -> Vec<RuleClause> {
         RuleId::FosnrAbuseInsultsNonFollower,
         except_author(
             [
-                label(SafetyLabelType::FOSNR_ABUSE_INSULTS),
+                label(FOSNR_LEVEL_1),
                 Condition::Not(Predicate::Relationship(
                     RelationshipPredicate::ViewerFollowsAuthor,
                 )),
@@ -611,21 +627,7 @@ pub(super) fn fosnr_fallback_drop() -> Vec<RuleClause> {
         everyone(
             [
                 viewer(ViewerPredicate::ClientNeedsFosnrFallbackDrops),
-                Condition::AnyOf(&[
-                    Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-                        SafetyLabelType::FOSNR_HATEFUL_CONDUCT,
-                    )),
-                    Predicate::Tweet(TweetPredicate::HasSafetyLabel(SafetyLabelType::FOSNR_ABUSE)),
-                    Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-                        SafetyLabelType::FOSNR_VIOLENT_SPEECH,
-                    )),
-                    Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-                        SafetyLabelType::FOSNR_CIVIC_INTEGRITY,
-                    )),
-                    Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-                        SafetyLabelType::FOSNR_ABUSE_INSULTS,
-                    )),
-                ]),
+                Condition::AnyOf(&FOSNR),
             ],
             drop_post(FilteredReason::PossiblyUndesirable),
         ),
@@ -660,6 +662,16 @@ pub(super) fn exclusive_tweet_drop() -> Vec<RuleClause> {
             exclusive(),
         ))
         .into()
+}
+
+pub(super) fn trusted_friends_tweet_drop() -> Vec<RuleClause> {
+    rule(
+        RuleId::TrustedFriendsTweet,
+        except_author(
+            [tweet(TweetPredicate::IsTrustedFriendsTweet)],
+            drop_post(FilteredReason::UnspecifiedReason),
+        ),
+    )
 }
 
 pub(super) fn author_blocks_viewer_exclusive_content_drop() -> Vec<RuleClause> {
@@ -809,62 +821,40 @@ pub(super) fn sensitive_viewer_drops() -> Vec<RuleClause> {
     .concat()
 }
 
+const NSFW_SENSITIVE_TWEET: Condition = Condition::AnyOf(&[
+    has_tweet_label(SafetyLabelType::NSFW_HIGH_PRECISION),
+    has_tweet_label(SafetyLabelType::NSFW_HIGH_RECALL),
+    has_tweet_label(SafetyLabelType::NSFW_TEXT),
+    has_tweet_label(SafetyLabelType::NSFW_TEXT_HIGH_PRECISION),
+    has_tweet_label(SafetyLabelType::NSFW_VIDEO),
+    Predicate::Tweet(TweetPredicate::NsfwAdminFlag),
+    Predicate::Tweet(TweetPredicate::NsfwUserFlag),
+]);
+
+const NSFW_SENSITIVE_AUTHOR: Condition = Condition::AnyOf(&[
+    has_user_label(AuthorLabel::NsfwAvatarImage),
+    has_user_label(AuthorLabel::NsfwBannerImage),
+    has_user_label(AuthorLabel::NsfwHighPrecision),
+    has_user_label(AuthorLabel::NsfwHighRecall),
+    has_user_label(AuthorLabel::NsfwNearPerfect),
+    Predicate::Author(AuthorPredicate::IsNsfwAdmin),
+    Predicate::Author(AuthorPredicate::IsNsfwUser),
+]);
+
 pub(super) fn sensitive_media_opt_out_drops() -> Vec<RuleClause> {
     let nsfw_media = || drop_post(FilteredReason::ContainNsfwMedia);
     [
         rule(
             RuleId::NsfwSensitiveViewerTweet,
             except_author(
-                [
-                    SENSITIVE_MEDIA_DISABLED,
-                    Condition::AnyOf(&[
-                        Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-                            SafetyLabelType::NSFW_HIGH_PRECISION,
-                        )),
-                        Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-                            SafetyLabelType::NSFW_HIGH_RECALL,
-                        )),
-                        Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-                            SafetyLabelType::NSFW_TEXT,
-                        )),
-                        Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-                            SafetyLabelType::NSFW_TEXT_HIGH_PRECISION,
-                        )),
-                        Predicate::Tweet(TweetPredicate::HasSafetyLabel(
-                            SafetyLabelType::NSFW_VIDEO,
-                        )),
-                        Predicate::Tweet(TweetPredicate::NsfwAdminFlag),
-                        Predicate::Tweet(TweetPredicate::NsfwUserFlag),
-                    ]),
-                ],
+                [SENSITIVE_MEDIA_DISABLED, NSFW_SENSITIVE_TWEET],
                 nsfw_media(),
             ),
         ),
         rule(
             RuleId::NsfwSensitiveViewerUser,
             except_author(
-                [
-                    SENSITIVE_MEDIA_DISABLED,
-                    Condition::AnyOf(&[
-                        Predicate::Author(AuthorPredicate::HasUserLabel(
-                            AuthorLabel::NsfwAvatarImage,
-                        )),
-                        Predicate::Author(AuthorPredicate::HasUserLabel(
-                            AuthorLabel::NsfwBannerImage,
-                        )),
-                        Predicate::Author(AuthorPredicate::HasUserLabel(
-                            AuthorLabel::NsfwHighPrecision,
-                        )),
-                        Predicate::Author(AuthorPredicate::HasUserLabel(
-                            AuthorLabel::NsfwHighRecall,
-                        )),
-                        Predicate::Author(AuthorPredicate::HasUserLabel(
-                            AuthorLabel::NsfwNearPerfect,
-                        )),
-                        Predicate::Author(AuthorPredicate::IsNsfwAdmin),
-                        Predicate::Author(AuthorPredicate::IsNsfwUser),
-                    ]),
-                ],
+                [SENSITIVE_MEDIA_DISABLED, NSFW_SENSITIVE_AUTHOR],
                 nsfw_media(),
             ),
         ),

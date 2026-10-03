@@ -32,6 +32,10 @@ pub(crate) struct TwemcacheSource {
     cache: Arc<dyn CacheRead>,
 }
 
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "KVCacheError belongs to the shared xai-cache client; only its timeout and backpressure errors get their own FallbackReason, and every other error counts as Other, including any the client adds"
+)]
 fn fallback_reason(e: &KVCacheError) -> FallbackReason {
     match e {
         KVCacheError::Timeout(_) => FallbackReason::Timeout,

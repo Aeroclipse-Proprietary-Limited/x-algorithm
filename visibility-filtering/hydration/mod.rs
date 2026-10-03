@@ -12,8 +12,8 @@ pub mod tweet_source;
 use crate::models::{
     ClientCapability, HydratedTweetCandidate, RawCandidate, TweetId, ViewerFeatures,
 };
-pub(crate) use decode::author::fallback_cache as author_fallback_cache;
-pub(crate) use decode::tweet::pure_core_fallback_cache;
+pub(crate) use decode::author::{AuthorFallbackCache, fallback_cache as author_fallback_cache};
+pub(crate) use decode::tweet::{PureCoreFallbackCache, pure_core_fallback_cache};
 pub(crate) use plan::HydrationPlan;
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -130,7 +130,7 @@ impl<'a> HydrationRequest<'a> {
         }
     }
 
-        pub(crate) fn with_retweet_sources(self, is_expanding_retweet_sources: bool) -> Self {
+    pub(crate) fn with_retweet_sources(self, is_expanding_retweet_sources: bool) -> Self {
         Self {
             is_expanding_retweet_sources,
             ..self
@@ -163,14 +163,14 @@ impl Hydration {
         self.tweets.get(&id)
     }
 
-        pub(crate) fn has_fetched_sources(&self) -> bool {
+    pub(crate) fn has_fetched_sources(&self) -> bool {
         self.has_fetched_sources
     }
 }
 
 pub(crate) struct HydratedTweet {
-        candidate: Option<HydratedTweetCandidate>,
-        has_failed_node: bool,
+    candidate: Option<HydratedTweetCandidate>,
+    has_failed_node: bool,
     source_tweet_id: Option<TweetId>,
     safety_labels: Option<Arc<vf_pb::SafetyLabelMap>>,
 }
@@ -184,7 +184,7 @@ impl HydratedTweet {
         self.has_failed_node
     }
 
-        pub(crate) fn is_evaluable(&self) -> bool {
+    pub(crate) fn is_evaluable(&self) -> bool {
         self.candidate.is_some() && !self.has_failed_node
     }
 

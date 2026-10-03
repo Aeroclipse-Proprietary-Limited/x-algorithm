@@ -1,10 +1,44 @@
+use crate::dark_traffic_setup;
 use crate::evaluate_tweets::EvaluateTweetsEndpoint;
 use crate::filter_tweets::FilterTweetsEndpoint;
 use crate::get_safety_labels::GetSafetyLabelsEndpoint;
+use crate::server_deps;
 use std::sync::Arc;
 use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
+use xai_dark_traffic::RejectDarkTrafficLayer;
+use xai_grpc_compression::GrpcZstdLayer;
 use xai_visibility_filtering_proto as vf_pb;
+use xai_x_rpc::grpc_client::TlsMode;
+use xai_x_service_builder::{XService, XServiceBuilder};
+
+#[derive(clap::Args, Debug)]
+pub struct ServeArgs {
+    #[arg(long, default_value_t = 50051u16)]
+    grpc_port: u16,
+    #[arg(long, default_value_t = 9090u16)]
+    metrics_port: u16,
+    #[arg(long, default_value = "atla")]
+    datacenter: String,
+    #[arg(long, default_value = "")]
+    otel_endpoint: String,
+}
+
+pub async fn serve<S: XService<Config = ()>>(args: ServeArgs) -> anyhow::Result<()> {
+    XServiceBuilder::new("visibility-filtering-service")
+        .grpc_port(args.grpc_port)
+        .metrics_port(args.metrics_port)
+        .datacenter(args.datacenter)
+        .otel_endpoint(args.otel_endpoint)
+        .with_tls(TlsMode::server_mtls_from_env()?)
+        .with_reflection(vf_pb::FILE_DESCRIPTOR_SET)
+        .with_layer(GrpcZstdLayer)
+        .with_layer(dark_traffic_setup::resolve_layer())
+        .with_layer(RejectDarkTrafficLayer::from_env())
+        .http_routes(xai_profiling::profiling_router())
+        .run::<S>(())
+        .await
+}
 
 pub struct VFServer {
     evaluate_tweets: EvaluateTweetsEndpoint,
@@ -13,7 +47,7 @@ pub struct VFServer {
 }
 
 #[tonic::async_trait]
-impl xai_x_service_builder::XService for VFServer {
+impl XService for VFServer {
     type Config = ();
 
     async fn build(ctx: xai_x_service_builder::ServiceContext<()>) -> Self {
@@ -31,7 +65,8 @@ impl xai_x_service_builder::XService for VFServer {
 
 impl VFServer {
     pub(crate) async fn new(datacenter: &str) -> Self {
-        crate::server_deps::build_prod_server(datacenter).await
+        crate::config::refuse_reference();
+        server_deps::build(datacenter).await.into_server(None)
     }
 
     pub(crate) fn from_endpoints(
@@ -86,7 +121,6 @@ mod tests {
     use xai_visibility_filtering::evaluated::EvaluationResult;
     use xai_visibility_filtering::vf_client::XaiVfClient;
     use xai_visibility_filtering_proto::visibility_filtering_service_client::VisibilityFilteringServiceClient;
-    use xai_x_service_builder::XService;
     use xai_x_thrift::tweet_service::{TweetFieldsResultFound, TweetFieldsResultState};
 
     struct NoLabels;
@@ -115,13 +149,13 @@ mod tests {
         let labels = Arc::new(NoLabels);
         VFServer::from_endpoints(
             EvaluateTweetsEndpoint::new(
-                filter_tweets.clone(),
+                Arc::clone(&filter_tweets),
                 ClientSwitches::for_tests(),
                 LimitedActionsCopy::from_json("[]"),
             ),
             FilterTweetsEndpoint::new(filter_tweets, None),
             GetSafetyLabelsEndpoint::new(Arc::new(SafetyLabelSource::new(Arc::new(
-                RemoteSource::new(labels.clone(), labels),
+                RemoteSource::new(Arc::clone(&labels), labels),
             )))),
         )
     }
@@ -170,7 +204,7 @@ mod tests {
             )
             .await;
         handle.abort();
-        let _ = handle.await;
+        assert!(handle.await.unwrap_err().is_cancelled());
 
         assert_eq!(
             home.unwrap(),
@@ -203,7 +237,7 @@ mod tests {
             })
             .await;
         handle.abort();
-        let _ = handle.await;
+        assert!(handle.await.unwrap_err().is_cancelled());
 
         let results = response.unwrap().into_inner().results;
         let wire = |result: &vf_pb::TweetVisibilityResult| {

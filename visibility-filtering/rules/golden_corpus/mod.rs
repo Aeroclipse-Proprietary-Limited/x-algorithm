@@ -13,6 +13,7 @@ mod oon_tweet_label;
 mod oon_user_label;
 mod relationship;
 mod takedown;
+mod trusted_friends;
 mod tweet_label;
 mod tweet_state;
 
@@ -213,6 +214,7 @@ fn rows() -> Vec<Row> {
         age_gating::rows(),
         age_verification::rows(),
         exclusive_content::rows(),
+        trusted_friends::rows(),
         conversation_control::rows(),
         interstitial::rows(),
         legacy_interstitial::rows(),

@@ -7,6 +7,7 @@ import os
 import queue
 import threading
 import time
+from itertools import zip_longest
 from typing import Iterator
 
 from xai_configlib import configclass
@@ -22,7 +23,6 @@ from xrex.data.streaming.kafkaloader import (
     platform_ca_bundle_path,
     system_ca_bundle_path,
 )
-
 
 rank_logger = logging.getLogger("rank")
 
@@ -167,7 +167,7 @@ class RustKafkaDataset(PhoenixKafkaDataset):
                 group_id=self.group_id,
                 batch_size=batch_size,
                 num_shards=num_shards,
-                shard_index=shard_index,
+                shard_index=self._reader_rank if reader_count else shard_index,
                 num_partitions=self.num_kafka_partitions,
                 sasl_mechanism=self.sasl_mechanism,
                 sasl_username=auth.sasl_username or self.sasl_plain_username,
@@ -461,13 +461,28 @@ class RustKafkaDataset(PhoenixKafkaDataset):
             "Kafka readers: %d for %d training processes", reader_count or num_shards, num_shards
         )
         self._reader_addresses: list[str] = []
+        self._reader_rank = shard_index
         if reader_count:
             if len(server_hosts) != num_shards:
                 raise ValueError("reader_count must fit the trainer host list")
             if self.is_eval:
                 raise ValueError("Redistribution requires one training iterator per rank")
+            ranks_by_host: dict[str, list[int]] = {}
+            for rank, host in enumerate(server_hosts):
+                ranks_by_host.setdefault(host, []).append(rank)
+            ranks = [
+                rank
+                for group in zip_longest(*ranks_by_host.values())
+                for rank in group
+                if rank is not None
+            ]
+            if reader_count < num_shards:
+                self._reader_rank = ranks.index(shard_index)
+            else:
+                ranks = list(range(num_shards))
             counts: dict[str, int] = {}
-            for host in server_hosts[:reader_count]:
+            for rank in ranks[:reader_count]:
+                host = server_hosts[rank]
                 port = self.reader_port + counts.get(host, 0)
                 self._reader_addresses.append(f"{host}:{port}")
                 counts[host] = counts.get(host, 0) + 1

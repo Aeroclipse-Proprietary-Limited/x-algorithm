@@ -172,6 +172,7 @@ impl ReverseChronPostsPipeline {
             )),
             Box::new(AdsBrandSafetyVfHydrator {
                 client: vf_safety_labels_client,
+                author_client: None,
             }),
             Box::new(TweetTypeMetricsHydrator::new()),
         ];

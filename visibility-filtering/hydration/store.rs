@@ -159,7 +159,14 @@ impl Store {
             }
             match origin {
                 KeyOrigin::Viewer => keys.extend(self.viewer_id),
-                _ => keys.extend(
+                KeyOrigin::RequestTweets
+                | KeyOrigin::PureCoreAuthor
+                | KeyOrigin::PureCoreRetweeter
+                | KeyOrigin::PureCoreReplyRoot
+                | KeyOrigin::ExclusiveConversationAuthor
+                | KeyOrigin::ConversationRoot(_)
+                | KeyOrigin::ViewerForCoAllowedList
+                | KeyOrigin::MyNetworkRootNotFollowingViewer => keys.extend(
                     self.request_tweets
                         .iter()
                         .filter_map(|request_tweet| self.key(origin, request_tweet)),
@@ -333,7 +340,7 @@ impl Store {
 
     pub(super) fn land(
         &mut self,
-        call: CallRequest<'_>,
+        call: &CallRequest<'_>,
         reply: Reply,
         elapsed: Duration,
     ) -> Landing {
@@ -607,7 +614,7 @@ mod tests {
             [2, 3, 4],
             HashMap::from([(2, Ok::<_, &str>(Some(core(20)))), (4, Ok(Some(core(40))))]),
         );
-        store.land(call, Reply::PureCores(pure_cores), Duration::ZERO);
+        store.land(&call, Reply::PureCores(pure_cores), Duration::ZERO);
         let resolved: Vec<(TweetId, u64)> = store
             .request_tweets
             .iter()
@@ -637,7 +644,7 @@ mod tests {
         let cores =
             HydrationBatch::from_results([1], HashMap::from([(1, Ok::<_, ()>(Some(retweet)))]));
         assert_eq!(
-            store.land(call, Reply::PureCores(cores), Duration::ZERO),
+            store.land(&call, Reply::PureCores(cores), Duration::ZERO),
             Landing::SourcesJoined
         );
         let mut unclaimed = Vec::new();

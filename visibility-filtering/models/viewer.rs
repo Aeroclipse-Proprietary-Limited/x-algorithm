@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Viewer {
     LoggedIn {
@@ -48,7 +50,9 @@ impl ViewerProfile {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, strum::VariantArray)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, strum::VariantArray,
+)]
 pub enum VerifyBlurSupport {
     #[default]
     Unsupported,
@@ -57,7 +61,7 @@ pub enum VerifyBlurSupport {
     Supported,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientCapability {
     pub verify_blur_support: Option<VerifyBlurSupport>,
     pub modern_blur: bool,

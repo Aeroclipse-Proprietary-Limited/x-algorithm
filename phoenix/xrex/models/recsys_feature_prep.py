@@ -13,6 +13,7 @@ from jax.sharding import PartitionSpec as P
 
 from xai_configlib import Config, configclass
 from xrex.data.recsys.feature_config import (
+    WEB_CONV_TRACKING_INTEGRATION_CARDINALITY,
     BoolFeature,
     CategoricalFeature,
     Int64Feature,
@@ -178,6 +179,9 @@ class FeaturePrepConfig(Config):
     enable_bridge_prob: bool = False
     enable_click_dwell_time: bool = False
     click_dwell_time_norm_scale: float = 60.0
+    enable_web_conv_time_on_site: bool = False
+    web_conv_time_on_site_norm_scale: float = 1800.0
+    enable_web_conv_tracking_integration: bool = False
     product_surface_cardinality: int = 16
     timezone_cardinality: int = 32
     enable_engagement_counts: bool = False
@@ -867,6 +871,33 @@ def _add_history_features(
             result = result + _embed_scalar_times_vector(
                 cd_normalized, "hist_click_dwell_time_vec", config
             ).astype(fprop_dtype)
+
+    if config.enable_web_conv_tracking_integration:
+        cat_features = batch["history_seq"].get("categorical_features")
+        idx = CategoricalFeature.webConvTrackingIntegrationSeq
+        if cat_features is not None and cat_features.shape[-1] > idx:
+            code = _cast_jax(cat_features)[:, :, idx]
+            result = result + _embed_categorical(
+                code,
+                WEB_CONV_TRACKING_INTEGRATION_CARDINALITY,
+                "hist_web_conv_tracking_integration_emb",
+                config,
+            ).astype(fprop_dtype)
+
+    if config.enable_web_conv_time_on_site:
+        int64_feats = batch["history_seq"].get("int64_features")
+        columns = (
+            (Int64Feature.webConvTimeOnSiteInferredMsSeq, "hist_web_conv_time_inferred_vec"),
+            (Int64Feature.webConvTimeOnSiteMeasuredMsSeq, "hist_web_conv_time_measured_vec"),
+        )
+        scale = config.web_conv_time_on_site_norm_scale
+        for idx, name in columns:
+            if int64_feats is not None and int64_feats.shape[-1] > idx:
+                secs = _cast_jax(int64_feats)[:, :, idx].astype(jnp.float32) / 1000.0
+                normalized = jnp.log1p(jnp.clip(secs, 0.0, scale)) / jnp.log1p(scale)
+                result = result + _embed_scalar_times_vector(normalized, name, config).astype(
+                    fprop_dtype
+                )
 
     return result
 

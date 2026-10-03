@@ -207,6 +207,39 @@ lazy_static! {
         &["outcome"]
     )
     .unwrap();
+    pub static ref AUTHOR_EXPLORATION_CANDIDATES: IntCounterVec = register_int_counter_vec!(
+        Opts::new(
+            "vm_ranker_author_exploration_candidates_total",
+            "Value-model candidates by whether their author has a non-zero exploration bonus"
+        ),
+        &["bonus"]
+    )
+    .unwrap();
+    pub static ref SAMPLED_CANDIDATES: IntCounter = register_int_counter!(
+        "vm_ranker_sampled_candidates_total",
+        "Candidates with Phoenix heads in sampled value-model requests"
+    )
+    .unwrap();
+    pub static ref HEAD_PREDICTION_SUM: CounterVec = register_counter_vec!(
+        Opts::new(
+            "vm_ranker_head_prediction_sum",
+            "Sum of Phoenix head predictions over sampled candidates"
+        ),
+        &["head"]
+    )
+    .unwrap();
+    pub static ref CANDIDATE_SCORE: HistogramVec = register_histogram_vec!(
+        HistogramOpts::new(
+            "vm_ranker_candidate_score",
+            "Per-candidate value-model scores in sampled requests: weighted (offset base) and ranked (after cold start, author diversity and OON, before DPP)"
+        )
+        .buckets(vec![
+            0.0, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2,
+            0.3, 0.5, 0.75, 1.0, 2.0, 5.0, 10.0,
+        ]),
+        &["stage"]
+    )
+    .unwrap();
 }
 
 pub struct Timer {

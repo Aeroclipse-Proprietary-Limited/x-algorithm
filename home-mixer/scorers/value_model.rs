@@ -71,6 +71,7 @@ pub(crate) fn scoring_inputs(
         ),
         cold_start_lift_to_rank: candidate.cold_start_lift_to_rank,
         weighted_score: None,
+        author_exploration_bonus: 0.0,
     }
 }
 

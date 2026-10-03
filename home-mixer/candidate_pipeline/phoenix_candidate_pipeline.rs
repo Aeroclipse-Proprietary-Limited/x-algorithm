@@ -11,12 +11,16 @@ use crate::candidate_hydrators::in_network_candidate_hydrator::InNetworkCandidat
 use crate::candidate_hydrators::language_code_hydrator::LanguageCodeHydrator;
 use crate::candidate_hydrators::media_info_hydrator::MediaInfoHydrator;
 use crate::candidate_hydrators::mutual_follow_jaccard_hydrator::MutualFollowJaccardHydrator;
+use crate::candidate_hydrators::phoenix_reply_ancestors_hydrator::PhoenixReplyAncestorsHydrator;
 use crate::candidate_hydrators::quote_hydrator::QuoteHydrator;
 use crate::candidate_hydrators::semantic_id_hydrator::SemanticIdHydrator;
 use crate::candidate_hydrators::subscription_hydrator::SubscriptionHydrator;
 use crate::candidate_hydrators::topic_feedback_context_hydrator::TopicFeedbackContextHydrator;
 use crate::candidate_hydrators::tweet_type_metrics_hydrator::TweetTypeMetricsHydrator;
 use crate::candidate_hydrators::vf_candidate_hydrator::VFCandidateHydrator;
+use crate::clients::author_brand_safety_client::{
+    AuthorBrandSafetyClient, MockAuthorBrandSafetyClient, ProdAuthorBrandSafetyClient,
+};
 use crate::clients::engagement_counts_client::{
     EngagementCountsClient, ProdEngagementCountsClient,
 };
@@ -26,9 +30,13 @@ use crate::clients::engagement_signals_client::{
 use crate::clients::gizmoduck_client::{GizmoduckClient, MockGizmoduckClient, ProdGizmoduckClient};
 
 use crate::clients::impressed_posts_client::ImpressedPostsClient;
+use crate::clients::popular_authors_store_client::ManhattanPopularAuthorsStore;
 use crate::clients::s2s::{S2S_CHAIN_PATH, S2S_CRT_PATH, S2S_KEY_PATH};
 use crate::clients::sid_retrieval_client::{
     MockSidRetrievalClient, ProdSidRetrievalClient, SidRetrievalClient,
+};
+use crate::clients::simclusters_ann_cache_client::{
+    MockSimClustersAnnCacheClient, ProdSimClustersAnnCacheClient, SimClustersAnnCacheClient,
 };
 use crate::clients::simclusters_ann_client::{
     MockSimClustersAnnClient, ProdSimClustersAnnClient, SimClustersAnnClient,
@@ -98,10 +106,14 @@ use crate::sources::cached_posts_source::CachedPostsSource;
 use crate::sources::phoenix_moe_source::PhoenixMOESource;
 use crate::sources::phoenix_source::PhoenixSource;
 use crate::sources::phoenix_topics_source::PhoenixTopicsSource;
+use crate::sources::popular_posts_source::PopularPostsSource;
 use crate::sources::sid_source::SidSource;
 use crate::sources::simclusters_source::SimclustersSource;
 use crate::sources::thunder_source::ThunderSource;
 use crate::sources::tweet_mixer_source::TweetMixerSource;
+use crate::util::popular_authors::{
+    InMemoryPopularAuthorsStore, PopularAuthorsCache, PopularAuthorsStore,
+};
 use xai_candidate_pipeline::component_library::clients::followed_grok_topics_store_client::{
     FollowedGrokTopicsStoreClient, MockFollowedGrokTopicsStoreClient,
     ProdFollowedGrokTopicsStoreClient,
@@ -201,6 +213,7 @@ impl PhoenixCandidatePipeline {
         strato_client: Arc<dyn StratoClient + Send + Sync>,
         tweet_mixer_client: Arc<dyn TweetMixerClient>,
         simclusters_ann_client: Arc<dyn SimClustersAnnClient + Send + Sync>,
+        simclusters_ann_cache_client: Arc<dyn SimClustersAnnCacheClient>,
         tes_client: Arc<dyn TESClient + Send + Sync>,
         media_info_cache_client: Arc<dyn MediaInfoCacheClient + Send + Sync>,
         gizmoduck_client: Arc<dyn GizmoduckClient + Send + Sync>,
@@ -232,6 +245,8 @@ impl PhoenixCandidatePipeline {
         vm_ranker_xds: &super::VmRankerXdsConfig,
         sid_client: Arc<dyn SidClient>,
         sid_retrieval_client: Arc<dyn SidRetrievalClient>,
+        popular_authors: Arc<PopularAuthorsCache>,
+        author_brand_safety_client: Arc<dyn AuthorBrandSafetyClient>,
     ) -> PhoenixCandidatePipeline {
         let query_hydrators: Vec<Box<dyn QueryHydrator<ScoredPostsQuery>>> = vec![
             Box::new(ScoringSequenceQueryHydrator::new(
@@ -313,6 +328,11 @@ impl PhoenixCandidatePipeline {
         let phoenix_moe_source = Box::new(PhoenixMOESource {
             dispatch: retrieval_dispatch,
         });
+        let popular_posts_source = Box::new(PopularPostsSource {
+            thunder_client: thunder_client.clone(),
+            thunder_capi_client: thunder_capi_client.clone(),
+            popular_authors: popular_authors.clone(),
+        });
         let thunder_source = Box::new(ThunderSource {
             thunder_client,
             thunder_capi_client,
@@ -321,6 +341,7 @@ impl PhoenixCandidatePipeline {
         let core_data_hydrator = CoreDataCandidateHydrator::new(tes_client.clone()).await;
         let simclusters_source = Box::new(SimclustersSource::new(
             simclusters_ann_client,
+            simclusters_ann_cache_client,
             core_data_hydrator.clone(),
         ));
         let sid_source = Box::new(SidSource::new(
@@ -330,6 +351,7 @@ impl PhoenixCandidatePipeline {
         let cached_posts_source = Box::new(CachedPostsSource);
         let sources: Vec<Box<dyn Source<ScoredPostsQuery, PostCandidate>>> = vec![
             thunder_source,
+            popular_posts_source,
             tweet_mixer_source,
             simclusters_source,
             phoenix_source,
@@ -345,6 +367,9 @@ impl PhoenixCandidatePipeline {
                 socialgraph_client: socialgraph_client.clone(),
             }),
             Box::new(core_data_hydrator),
+            Box::new(PhoenixReplyAncestorsHydrator {
+                tes_client: tes_client.clone(),
+            }),
             Box::new(
                 QuoteHydrator::new(
                     tes_client.clone(),
@@ -436,6 +461,7 @@ impl PhoenixCandidatePipeline {
             ),
             Box::new(AdsBrandSafetyVfHydrator {
                 client: vf_safety_labels_client,
+                author_client: Some(author_brand_safety_client),
             }),
             Box::new(TweetTypeMetricsHydrator::new()),
             Box::new(FollowingRepliedUsersHydrator),
@@ -471,7 +497,7 @@ impl PhoenixCandidatePipeline {
                 Box::new(RedisPostCandidateCacheSideEffect::new(redis_client)),
                 Box::new(ScoredStatsSideEffect),
                 Box::new(ResponseDiversityStatsSideEffect),
-                Box::new(AuthorServedMetricsSideEffect),
+                Box::new(AuthorServedMetricsSideEffect { popular_authors }),
                 Box::new(MutualFollowStatsSideEffect),
                 Box::new(DebugSideEffect),
                 Box::new(PhoenixRequestCacheSideEffect::new(
@@ -513,6 +539,7 @@ impl PhoenixCandidatePipeline {
             strato_client,
             tweet_mixer_client,
             simclusters_ann_client,
+            simclusters_ann_cache_client,
             tes_client,
             media_info_cache_client,
             gizmoduck_client,
@@ -540,6 +567,7 @@ impl PhoenixCandidatePipeline {
             engagement_counts_client_impl,
             sid_client,
             thunder_capi_client,
+            author_brand_safety_client,
         ) = tokio::join!(
             async {
                 Arc::new(
@@ -598,6 +626,13 @@ impl PhoenixCandidatePipeline {
                         .await
                         .expect("Failed to create SimClusters ANN client"),
                 ) as Arc<dyn SimClustersAnnClient + Send + Sync>
+            },
+            async {
+                Arc::new(
+                    ProdSimClustersAnnCacheClient::new(datacenter)
+                        .await
+                        .expect("Failed to create SimClusters ANN cache client"),
+                ) as Arc<dyn SimClustersAnnCacheClient>
             },
             async {
                 Arc::new(
@@ -839,10 +874,27 @@ impl PhoenixCandidatePipeline {
                     }
                 }
             },
+            async {
+                Arc::new(
+                    ProdAuthorBrandSafetyClient::new(datacenter)
+                        .await
+                        .expect("Failed to create AuthorBrandSafety client"),
+                ) as Arc<dyn AuthorBrandSafetyClient>
+            },
         );
 
         let engagement_counts_client: Arc<dyn EngagementCountsClient> =
             engagement_counts_client_impl;
+
+        let popular_authors_store: Arc<dyn PopularAuthorsStore> =
+            match ManhattanPopularAuthorsStore::new(datacenter).await {
+                Ok(store) => Arc::new(store),
+                Err(e) => {
+                    tracing::warn!(error = %e, "popular authors store unavailable; using in-memory");
+                    Arc::new(InMemoryPopularAuthorsStore::default())
+                }
+            };
+        let popular_authors = Arc::new(PopularAuthorsCache::new(popular_authors_store));
 
         PhoenixCandidatePipeline::build_with_clients(
             user_action_aggregation_client,
@@ -853,6 +905,7 @@ impl PhoenixCandidatePipeline {
             strato_client,
             tweet_mixer_client,
             simclusters_ann_client,
+            simclusters_ann_cache_client,
             tes_client,
             media_info_cache_client,
             gizmoduck_client,
@@ -884,6 +937,8 @@ impl PhoenixCandidatePipeline {
             vm_ranker_xds,
             sid_client,
             ProdSidRetrievalClient::new(vm_ranker_xds) as Arc<dyn SidRetrievalClient>,
+            popular_authors,
+            author_brand_safety_client,
         )
         .await
     }
@@ -898,6 +953,8 @@ impl PhoenixCandidatePipeline {
         let tweet_mixer_client: Arc<dyn TweetMixerClient> = Arc::new(MockTweetMixerClient);
         let simclusters_ann_client: Arc<dyn SimClustersAnnClient + Send + Sync> =
             Arc::new(MockSimClustersAnnClient);
+        let simclusters_ann_cache_client: Arc<dyn SimClustersAnnCacheClient> =
+            Arc::new(MockSimClustersAnnCacheClient);
         let tes_client = Arc::new(MockTESClient::default());
         let media_info_cache_client: Arc<dyn MediaInfoCacheClient + Send + Sync> =
             Arc::new(MockMediaInfoCacheClient::default());
@@ -951,6 +1008,7 @@ impl PhoenixCandidatePipeline {
             strato_client,
             tweet_mixer_client,
             simclusters_ann_client,
+            simclusters_ann_cache_client,
             tes_client,
             media_info_cache_client,
             gizmoduck_client,
@@ -982,6 +1040,10 @@ impl PhoenixCandidatePipeline {
             &super::VmRankerXdsConfig::disabled_with_healthz(),
             Arc::new(MockSidClient) as Arc<dyn SidClient>,
             Arc::new(MockSidRetrievalClient) as Arc<dyn SidRetrievalClient>,
+            Arc::new(PopularAuthorsCache::new(Arc::new(
+                InMemoryPopularAuthorsStore::default(),
+            ))),
+            Arc::new(MockAuthorBrandSafetyClient::default()) as Arc<dyn AuthorBrandSafetyClient>,
         )
         .await
     }

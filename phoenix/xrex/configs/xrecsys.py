@@ -12,7 +12,10 @@ from xrex.data.parquet_recsys import (
     PhoenixToyDataset,
 )
 from xrex.data.recsys.constants import continuous_action_type_map
-from xrex.data.recsys.feature_config import CategoricalFeature
+from xrex.data.recsys.feature_config import (
+    WEB_CONV_TRACKING_INTEGRATION_CARDINALITY,
+    CategoricalFeature,
+)
 from xrex.data.recsys.recsys_batch import EMBEDDING_CONFIG
 from xrex.data.recsys.sequence_packing import BetaLengthDistribution
 from xrex.models.recsys_attention import RecsysAttentionConfig
@@ -650,6 +653,8 @@ for config in configs:
                 "mask_candidate_positive_when_negative_action_present", False
             ),
             ads_head_masking=mparams.get("ads_head_masking", False),
+            enable_dpa_input_embedding=mparams.get("enable_dpa_input_embedding", False),
+            attend_padded_history=mparams.get("attend_padded_history", False),
             concat_history_bridge_prob=mparams.get("concat_history_bridge_prob", False),
             mact_in_app_loss_weight=mparams.get("mact_in_app_loss_weight", 1.0),
             purchase_value_loss_weight=mparams.get("purchase_value_loss_weight", 0.0),
@@ -660,6 +665,9 @@ for config in configs:
             metric_group=mparams.get("metric_group", "default"),
             enable_platform_metrics=mparams.get("enable_platform_metrics", False),
             metric_mask_keys=mparams.get("metric_mask_keys"),
+            conversion_delay_slice_thresholds_s=tuple(
+                mparams.get("conversion_delay_slice_thresholds_s", ())
+            ),
             continuous_metrics_mae_mean=mparams.get("continuous_metrics_mae_mean", False),
             emb_table_width=mparams["emb_table_width"],
             history_seq_len=mparams["history_seq_len"],
@@ -699,9 +707,13 @@ for config in configs:
             ],
             context_features=ContextFeaturesConfig(
                 enabled=mparams.get("enable_context_features", True),
+                enable_day_of_week=mparams.get("enable_day_of_week", True),
                 enable_engagement_counts=mparams.get("enable_engagement_counts", False),
                 enable_author_nsfw=mparams.get("enable_author_nsfw", False),
                 enable_search_lexical_match=mparams.get("enable_search_lexical_match", False),
+                enable_web_conv_tracking_integration=mparams.get(
+                    "enable_web_conv_tracking_integration", False
+                ),
                 categorical_features=[
                     CategoricalFeatureConfig(
                         feature_name="product_surface",
@@ -744,6 +756,12 @@ for config in configs:
                         feature_name="author_is_nsfw",
                         cardinality=2,
                         embedding_dim=16,
+                    ),
+                    CategoricalFeatureConfig(
+                        index=CategoricalFeature.webConvTrackingIntegrationSeq,
+                        feature_name="web_conv_tracking_integration",
+                        cardinality=WEB_CONV_TRACKING_INTEGRATION_CARDINALITY,
+                        embedding_dim=8,
                     ),
                     CategoricalFeatureConfig(
                         index=CategoricalFeature.favCountBucketSeq,
@@ -825,6 +843,7 @@ for config in configs:
             hash_table=hash_table,
         ),
         bs_per_device=mparams["bs_per_device"],
+        num_microbatch=mparams.get("num_microbatch", 1),
         seqpack_distribution=seqpack_distribution,
         dataset=dataset,
         parallel_config=ParallelConfig(

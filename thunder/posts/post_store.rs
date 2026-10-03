@@ -8,9 +8,8 @@ use tokio::time::MissedTickBehavior;
 use xai_thunder_proto::{LightPost, TweetDeleteEvent};
 
 use crate::config::{
-    DELETE_EVENT_KEY, MAX_ORIGINAL_POSTS_PER_AUTHOR, MAX_POSTING_LIST_SIZE,
-    MAX_REPLY_POSTS_PER_AUTHOR, MAX_TINY_POSTS_PER_USER_SCAN, MAX_VIDEO_POSTS_PER_AUTHOR,
-    TRIM_FRACTION,
+    DELETE_EVENT_KEY, MAX_POSTING_LIST_SIZE, MAX_TINY_POSTS_PER_USER_SCAN,
+    MAX_VIDEO_POSTS_PER_AUTHOR, TRIM_FRACTION,
 };
 use crate::metrics::{
     POST_STORE_DELETED_POSTS, POST_STORE_ENTITY_COUNT, POST_STORE_POSTS_RETURNED,
@@ -254,30 +253,33 @@ impl PostStore {
         exclude_tweet_ids: &HashSet<i64>,
         start_time: Instant,
         request_user_id: i64,
+        max_original_per_author: usize,
+        max_secondary_per_author: usize,
     ) -> Vec<LightPost> {
         let following_users_set: HashSet<i64> = user_ids.iter().copied().collect();
 
         let mut all_posts = self.get_posts_from_map(
             &self.original_posts_by_user,
             user_ids,
-            MAX_ORIGINAL_POSTS_PER_AUTHOR,
+            max_original_per_author,
             exclude_tweet_ids,
             &HashSet::new(),
             start_time,
             request_user_id,
         );
 
-        let secondary_posts = self.get_posts_from_map(
-            &self.secondary_posts_by_user,
-            user_ids,
-            MAX_REPLY_POSTS_PER_AUTHOR,
-            exclude_tweet_ids,
-            &following_users_set,
-            start_time,
-            request_user_id,
-        );
-
-        all_posts.extend(secondary_posts);
+        if max_secondary_per_author > 0 {
+            let secondary_posts = self.get_posts_from_map(
+                &self.secondary_posts_by_user,
+                user_ids,
+                max_secondary_per_author,
+                exclude_tweet_ids,
+                &following_users_set,
+                start_time,
+                request_user_id,
+            );
+            all_posts.extend(secondary_posts);
+        }
         POST_STORE_POSTS_RETURNED.observe(all_posts.len() as f64);
         all_posts
     }

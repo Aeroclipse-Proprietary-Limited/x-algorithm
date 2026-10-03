@@ -41,7 +41,6 @@ from xai_checkpointing import checksum
 from xai_checkpointing import common as checkpointing_common
 from xai_checkpointing import load as checkpointing_load
 from xai_checkpointing.tree_util import tree_to_dict
-
 from xrex.models.model_utils import Parameter, unwrap_tree
 from xrex.models.recsys_model import RecsysAggregatedModelConfig
 from xrex.models.recsys_two_tower_model import RecsysTwoTowerModelConfig
@@ -770,20 +769,6 @@ class Trainer(Config):
 
         unwrapped_state_shape = unwrap_tree(self.state_shape)
 
-        def norm(tree):
-            return jax.tree.map(
-                lambda x: jnp.sqrt(jnp.sum(jnp.square(x.astype(jnp.float32)))), tree
-            )
-
-        self.norm_jit = JittedOrCompiled(
-            jax.jit(
-                norm,
-                in_shardings=(self.state_sharding,),
-                out_shardings=jax.sharding.NamedSharding(self.mesh, P()),
-            )
-        )
-        self.register_jit_function(self.norm_jit, unwrapped_state_shape, phase="early")
-
         def compute_checksums(state):
             return checksum.compute_checksums(state, self.state_sharding, self.mesh)
 
@@ -1170,6 +1155,9 @@ class Trainer(Config):
     def _uses_tensorstore_save(self) -> bool:
         return self.checkpoint_config.save_method == "tensorstore"
 
+    def restore_checkpoint_arrays(self, path, arrays, load_mask, rename, tag, on_replaced):
+        return {}
+
     def maybe_load_checkpoint(
         self, ctx: TrainerContext, tag: str | None = None
     ) -> tuple[bool, int, int]:
@@ -1232,6 +1220,7 @@ class Trainer(Config):
         rename = None
 
         loads: dict[str, dict[str, jax.Array]] = {}
+        independently_verified: dict[str, dict[str, int]] = {}
 
         if ctx.checkpoint.format == "orbax":
             if use_streamed_restore:
@@ -1311,6 +1300,14 @@ class Trainer(Config):
                     )
 
             for checkpoint_path, partial_host_state in loads.items():
+                independently_verified[checkpoint_path] = self.restore_checkpoint_arrays(
+                    checkpoint_path,
+                    partial_host_state,
+                    mask,
+                    rename,
+                    tag,
+                    _graft_replaced if use_streamed_restore else None,
+                )
                 if use_streamed_restore:
                     checkpointing_load.load_checkpoint_streamed(
                         checkpoint_path,
@@ -1394,6 +1391,13 @@ class Trainer(Config):
 
         if self.checkpoint_config.verify_checksums:
             checksum_dict = self.checksum_dict()
+            for expected in independently_verified.values():
+                checksum.check_internal_consistency(
+                    checksum_dict, "restored state", names=set(expected)
+                )
+                for name, value in expected.items():
+                    if checksum_dict["global_checksums"][name] != value:
+                        raise ValueError(f"Restored destination checksum mismatch for {name}")
 
         for i, (checkpoint_path, partial_host_state) in enumerate(loads.items()):
             restored_fields = set()
@@ -1435,7 +1439,8 @@ class Trainer(Config):
             if self.checkpoint_config.verify_checksums:
                 checksums_file = f"{checkpoint_path}/checksums.0.json"
                 try:
-                    if checksum.compare_checksum_dicts(
+                    verified = independently_verified.get(checkpoint_path, {})
+                    if (verified and not names) or checksum.compare_checksum_dicts(
                         checksums_file, checksum_dict, rename, names=names
                     ):
                         rank_logger.info("Checkpoint checksums match%s", extra0)

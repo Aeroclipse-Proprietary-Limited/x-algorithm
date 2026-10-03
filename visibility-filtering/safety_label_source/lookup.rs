@@ -231,7 +231,7 @@ mod tests {
             42,
             ManhattanOutcome::Resolved(empty_label_map()),
         )]));
-        let source = RemoteSource::new(twemcache.clone(), manhattan.clone());
+        let source = RemoteSource::new(Arc::clone(&twemcache), Arc::clone(&manhattan));
 
         let results = source.get(&[42, 42]).await;
 
@@ -243,7 +243,7 @@ mod tests {
     async fn get_missing_from_manhattan_is_fetch_error() {
         let twemcache = FakeTwemcache::new(HashMap::from([(42, TwemcacheOutcome::Miss)]));
         let manhattan = FakeManhattan::new(HashMap::new());
-        let source = RemoteSource::new(twemcache.clone(), manhattan.clone());
+        let source = RemoteSource::new(Arc::clone(&twemcache), Arc::clone(&manhattan));
 
         let results = source.get(&[42]).await;
 
@@ -268,8 +268,8 @@ mod tests {
             (5, ManhattanOutcome::Resolved(empty_label_map())),
         ]));
         let warmer = FakeWarmer::new();
-        let source =
-            RemoteSource::new(twemcache.clone(), manhattan.clone()).with_warmer(warmer.clone());
+        let source = RemoteSource::new(Arc::clone(&twemcache), Arc::clone(&manhattan))
+            .with_warmer(Arc::<FakeWarmer>::clone(&warmer));
 
         let results = source.get(&[1, 2, 3, 4, 5]).await;
 
@@ -292,7 +292,8 @@ mod tests {
             42,
             ManhattanOutcome::Resolved(empty_label_map()),
         )]));
-        let source = RemoteSource::new(twemcache.clone(), manhattan.clone()).with_warmer(warmer);
+        let source =
+            RemoteSource::new(Arc::clone(&twemcache), Arc::clone(&manhattan)).with_warmer(warmer);
 
         let results = source.get(&[42]).await;
 
@@ -314,7 +315,7 @@ mod tests {
                 ManhattanOutcome::Failure(LookupError::new(FailureKind::ManhattanDecode, "decode")),
             ),
         ]));
-        let source = RemoteSource::new(twemcache.clone(), manhattan.clone());
+        let source = RemoteSource::new(Arc::clone(&twemcache), Arc::clone(&manhattan));
 
         let results = source.get(&[1, 2, 3]).await;
 

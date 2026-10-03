@@ -1,9 +1,8 @@
-pub const ENV_DUAL_CALL_HARNESS_ENABLED: &str = "VF_DUAL_CALL_HARNESS_ENABLED";
 pub const ENV_FALLBACK_CACHE_ENABLED: &str = "VF_FALLBACK_CACHE_ENABLED";
 pub const ENV_CACHE_WARM_ENABLED: &str = "VF_CACHE_WARM_ENABLED";
 pub const ENV_AUTHOR_ID_FALLBACK_ENABLED: &str = "VF_AUTHOR_ID_FALLBACK_ENABLED";
 pub const ENV_AUTHOR_ID_FALLBACK_CAPACITY: &str = "VF_AUTHOR_ID_FALLBACK_CAPACITY";
-pub const ENV_IMAGE: &str = "VF_IMAGE";
+pub const ENV_REFERENCE: &str = "VF_REFERENCE";
 pub const ENV_DARK_TRAFFIC_ENABLED: &str = "DARK_TRAFFIC_ENABLED";
 pub const ENV_APP_ENV: &str = "APP_ENV";
 pub const ENV_FS_PATH: &str = "VF_FS_PATH";
@@ -40,8 +39,13 @@ pub fn resolve_twemcache_client_name(configured: Option<&str>) -> String {
         .to_string()
 }
 
-pub(crate) fn dual_call_harness_enabled() -> bool {
-    parse_env_flag(std::env::var(ENV_DUAL_CALL_HARNESS_ENABLED).ok().as_deref())
+#[expect(clippy::panic, reason = "startup fail-fast on misconfiguration")]
+pub(crate) fn refuse_reference() {
+    if let Ok(reference) = std::env::var(ENV_REFERENCE)
+        && reference != "none"
+    {
+        panic!("{ENV_REFERENCE}={reference} needs the staging binary's serve");
+    }
 }
 
 pub(crate) fn fallback_cache_enabled() -> bool {
@@ -66,7 +70,7 @@ pub(crate) fn cache_warm_enabled() -> bool {
     parse_env_flag(std::env::var(ENV_CACHE_WARM_ENABLED).ok().as_deref())
 }
 
-fn parse_env_flag(value: Option<&str>) -> bool {
+pub(crate) fn parse_env_flag(value: Option<&str>) -> bool {
     value.is_some_and(|value| {
         matches!(
             value.to_ascii_lowercase().as_str(),

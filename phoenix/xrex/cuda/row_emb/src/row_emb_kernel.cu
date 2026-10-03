@@ -90,7 +90,6 @@ __device__ __forceinline__ void sum_occurrences(
   }
 }
 
-
 __global__ void sanitize_ids_kernel(const int32_t* ids, int32_t* out, int64_t n, int64_t rows) {
   const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i >= n) return;
@@ -201,7 +200,6 @@ __global__ void owner_counts_kernel(
   const int end = lower_bound(int64_t(p + 1) * ownership.rows_per_rank);
   counts[p] = end - begin;
 }
-
 
 __global__ void gather_rows_kernel(
     const bf16* table,

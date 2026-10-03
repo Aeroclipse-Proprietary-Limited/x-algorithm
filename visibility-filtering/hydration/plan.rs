@@ -6,7 +6,7 @@ use strum::VariantArray;
 use xai_core_entities::entities::ConversationControlArm;
 use xai_core_entities::gizmoduck_client::QueryFields;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, VariantArray)]
 pub(crate) enum Source {
     TesPureCore,
     TesTweet,
@@ -36,7 +36,7 @@ pub(super) enum Edge {
     BlockedBy,
     SuperFollows,
     FollowedBy,
-        SecondDegree,
+    SecondDegree,
 }
 
 impl Edge {
@@ -60,12 +60,12 @@ pub(super) enum KeyOrigin {
     RequestTweets,
     Viewer,
     PureCoreAuthor,
-        PureCoreRetweeter,
+    PureCoreRetweeter,
     PureCoreReplyRoot,
     ExclusiveConversationAuthor,
     ConversationRoot(&'static [ConversationControlArm]),
-        ViewerForCoAllowedList,
-        MyNetworkRootNotFollowingViewer,
+    ViewerForCoAllowedList,
+    MyNetworkRootNotFollowingViewer,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -73,7 +73,7 @@ pub(super) struct NodeSpec {
     pub(super) source: Source,
     pub(super) part: Part,
     pub(super) key: KeyOrigin,
-        pub(super) label: (&'static str, &'static str),
+    pub(super) label: (&'static str, &'static str),
 }
 
 impl KeyOrigin {
@@ -91,14 +91,21 @@ impl KeyOrigin {
         }
     }
 
-        fn reads(self) -> Hydrators {
+    fn reads(self) -> Hydrators {
         let input = match self.input() {
             Some(input) => Hydrators::of(input),
             None => Hydrators::empty(),
         };
         match self {
             KeyOrigin::MyNetworkRootNotFollowingViewer => input.with(Hydrator::ConversationControl),
-            _ => input,
+            KeyOrigin::RequestTweets
+            | KeyOrigin::Viewer
+            | KeyOrigin::PureCoreAuthor
+            | KeyOrigin::PureCoreRetweeter
+            | KeyOrigin::PureCoreReplyRoot
+            | KeyOrigin::ExclusiveConversationAuthor
+            | KeyOrigin::ConversationRoot(_)
+            | KeyOrigin::ViewerForCoAllowedList => input,
         }
     }
 }
@@ -259,11 +266,11 @@ impl Hydrator {
         }
     }
 
-            pub(crate) const fn is_edge(self) -> bool {
+    pub(crate) const fn is_edge(self) -> bool {
         self.edge().is_some()
     }
 
-        pub(super) const fn needs_viewer(self) -> bool {
+    pub(super) const fn needs_viewer(self) -> bool {
         self.is_edge()
             || matches!(
                 self.spec().key,
@@ -303,7 +310,7 @@ const _: () = assert!(author_keys_come_from_pure_core());
 const _: () = assert!(Hydrator::VARIANTS.len() <= u32::BITS as usize);
 
 impl Hydrators {
-        pub const fn closed(self) -> Self {
+    pub const fn closed(self) -> Self {
         let mut closed = self.with(Hydrator::PureCore);
         let mut rest = Hydrator::VARIANTS;
         while let [head @ .., node] = rest {
@@ -329,7 +336,7 @@ pub(crate) struct HydrationPlan {
     level: SafetyLevel,
     groups: Vec<Group>,
     nodes: Hydrators,
-        logged_out_nodes: Hydrators,
+    logged_out_nodes: Hydrators,
 }
 
 pub(super) struct Group {
@@ -341,7 +348,7 @@ pub(super) struct Group {
     methods: Vec<&'static str>,
     edges: Vec<(Edge, Graph, EdgeDirection, Hydrators)>,
     fields: Vec<QueryFields>,
-        readers: Vec<usize>,
+    readers: Vec<usize>,
 }
 
 impl HydrationPlan {
@@ -428,7 +435,7 @@ impl HydrationPlan {
         self.groups.iter()
     }
 
-        pub(super) fn readers<'a>(&'a self, landed: &'a Group) -> impl Iterator<Item = &'a Group> {
+    pub(super) fn readers<'a>(&'a self, landed: &'a Group) -> impl Iterator<Item = &'a Group> {
         landed
             .readers
             .iter()
@@ -437,7 +444,7 @@ impl HydrationPlan {
 }
 
 impl Group {
-            pub(super) fn label(&self) -> (String, String) {
+    pub(super) fn label(&self) -> (String, String) {
         (self.clients.join("+"), self.methods.join("+"))
     }
 
@@ -445,7 +452,7 @@ impl Group {
         &self.fields
     }
 
-        pub(super) fn edges(&self) -> &[(Edge, Graph, EdgeDirection, Hydrators)] {
+    pub(super) fn edges(&self) -> &[(Edge, Graph, EdgeDirection, Hydrators)] {
         &self.edges
     }
 }
@@ -457,7 +464,14 @@ fn fields(source: Source, nodes: Hydrators) -> Vec<QueryFields> {
             .copied()
             .filter(|node| node.spec().source == source)
             .fold(Hydrators::empty(), Hydrators::with),
-        _ => nodes,
+        Source::TesPureCore
+        | Source::TesTweet
+        | Source::TesConversationControl
+        | Source::SafetyLabels
+        | Source::GizmoduckViewer
+        | Source::Flock
+        | Source::ViewerCountry
+        | Source::Wingman => nodes,
     };
     let mut fields = Vec::new();
     for node in nodes.iter() {
@@ -562,7 +576,7 @@ mod tests {
     use crate::rules::{RuleEngine, SafetyLevel};
     use strum::VariantArray;
 
-            const PLANS: &str = "\
+    const PLANS: &str = "\
 filter_all: 1 calls
 tes/get_tweet_core_datas after: - nodes: pure_core
 timeline_home: 7 calls

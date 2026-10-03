@@ -16,6 +16,8 @@ from numpy import typing as npt
 
 from xrex.data.recsys.ads_head_masking import build_trained_candidate_mask
 from xrex.data.recsys.constants import (
+    CONVERSION_DELAY_COLUMNS,
+    CONVERSION_DELAY_NONE,
     CONVERSION_KEEP_APP,
     CONVERSION_KEEP_WEB,
     action_type_map,
@@ -231,6 +233,7 @@ class PostSeq(TypedDict):
     trained_candidate_mask: NotRequired[npt.NDArray[np.bool_] | None]
     value_label_valid: NotRequired[npt.NDArray[np.bool_]]
     value_baseline_mean_usd: NotRequired[npt.NDArray[np.float32]]
+    conversion_delay_ms: NotRequired[npt.NDArray[np.int32]]
     safety_label_mask: npt.NDArray[np.int64] | None
     embedding: npt.NDArray[np.float32] | jax.Array | None
     search_query_embeddings: npt.NDArray[np.float32] | None
@@ -358,6 +361,39 @@ def _read_value_labels(
     return labels
 
 
+def _read_conversion_delays(record_batch: pa.RecordBatch, shape: tuple[int, int]) -> np.ndarray:
+    rows, seq_len = shape
+    out = np.full((rows, seq_len, len(CONVERSION_DELAY_COLUMNS)), CONVERSION_DELAY_NONE, np.int32)
+    for k, column in enumerate(CONVERSION_DELAY_COLUMNS):
+        if column not in record_batch.schema.names:
+            continue
+        col = record_batch.column(column)
+        if col.type != pa.list_(pa.int64(), seq_len):
+            raise ValueError(f"{column} must have type {pa.list_(pa.int64(), seq_len)}")
+        values = col.values.slice(col.offset * seq_len, rows * seq_len)
+        values = values.fill_null(CONVERSION_DELAY_NONE)
+        delays = values.to_numpy(zero_copy_only=False).reshape(shape)
+        out[:, :, k] = np.clip(delays, CONVERSION_DELAY_NONE, _INT32_MAX)
+        out[col.is_null().to_numpy(zero_copy_only=False), :, k] = CONVERSION_DELAY_NONE
+    return out
+
+
+def empty_conversion_delays(batch_size: int, candidate_seq_len: int) -> np.ndarray:
+    return np.full(
+        (batch_size, candidate_seq_len, len(CONVERSION_DELAY_COLUMNS)),
+        CONVERSION_DELAY_NONE,
+        np.int32,
+    )
+
+
+def _extend_conversion_delays(post_seq: PostSeq, shape: tuple[int, int]) -> np.ndarray:
+    out = empty_conversion_delays(*shape)
+    values = post_seq.get("conversion_delay_ms")
+    if isinstance(values, np.ndarray):
+        out[:, : values.shape[1]] = values
+    return out
+
+
 def _extend_value_labels(post_seq: PostSeq, shape: tuple[int, int]) -> dict[str, np.ndarray]:
     labels = {key: np.zeros(shape, dtype=dtype) for key, dtype in VALUE_LABEL_DTYPES.items()}
     for key in labels:
@@ -462,6 +498,7 @@ def from_record_batch(
         )
 
     value_labels = _read_value_labels(record_batch, (batch_size, actions.shape[1]))
+    conversion_delays = _read_conversion_delays(record_batch, (batch_size, actions.shape[1]))
 
     if "clientAppIdSeq" in record_batch.schema.names:
         client_app_id = _col(record_batch, "clientAppIdSeq", batch_size, np.int32)
@@ -661,6 +698,9 @@ def from_record_batch(
     candidate_value_labels: dict[str, np.ndarray] = {
         key: np.zeros(cand_shape_2d, dtype=dtype) for key, dtype in VALUE_LABEL_DTYPES.items()
     }
+    candidate_conversion_delays = np.full(
+        (*cand_shape_2d, len(CONVERSION_DELAY_COLUMNS)), CONVERSION_DELAY_NONE, dtype=np.int32
+    )
     candidate_post_creation_ts_sec = np.zeros(cand_shape_2d, dtype=np.int32)
     candidate_actions = np.zeros(cand_shape_3d, dtype=actions.dtype)
     candidate_continuous_actions = np.zeros(
@@ -827,6 +867,7 @@ def from_record_batch(
             candidate_continuous_actions[*cslice] = continuous_actions[*dslice, :]
             for key, values in value_labels.items():
                 candidate_value_labels[key][*cslice] = values[*dslice]
+            candidate_conversion_delays[*cslice] = conversion_delays[*dslice, :]
             candidate_promoted_ids[*cslice] = promoted_ids[*dslice]
             candidate_line_item_objective[*cslice] = line_item_objective[*dslice]
             candidate_safety_label_mask[*cslice] = safety_label_mask[*dslice]
@@ -914,6 +955,7 @@ def from_record_batch(
             candidate_continuous_actions[not_found] = 0
             for values in candidate_value_labels.values():
                 values[not_found] = 0
+            candidate_conversion_delays[not_found] = CONVERSION_DELAY_NONE
             candidate_promoted_ids[not_found] = 0
             candidate_line_item_objective[not_found] = 0
             candidate_safety_label_mask[not_found] = 0
@@ -1013,6 +1055,7 @@ def from_record_batch(
         post_ids=candidate_post_ids if include_candidate_post_ids else None,
         trained_candidate_mask=candidate_trained_mask,
         **candidate_value_labels,
+        conversion_delay_ms=candidate_conversion_delays,
         continuous_actions=candidate_continuous_actions,
         promoted_ids=candidate_promoted_ids,
         line_item_objective=candidate_line_item_objective,
@@ -1370,6 +1413,9 @@ def apply_negative_sampling(
         post_ids=new_post_ids,
         trained_candidate_mask=new_trained_mask,
         **_extend_value_labels(post_seq, (batch_size, total_candidate_slots)),
+        conversion_delay_ms=_extend_conversion_delays(
+            post_seq, (batch_size, total_candidate_slots)
+        ),
         continuous_actions=new_continuous_actions,
         promoted_ids=new_promoted_ids,
         line_item_objective=new_line_item_objective,
@@ -1624,6 +1670,9 @@ def apply_global_negative_sampling(
         post_ids=new_post_ids,
         trained_candidate_mask=new_gn_trained_mask,
         **_extend_value_labels(post_seq, (batch_size, expanded_candidate_slots)),
+        conversion_delay_ms=_extend_conversion_delays(
+            post_seq, (batch_size, expanded_candidate_slots)
+        ),
         continuous_actions=new_continuous_actions,
         promoted_ids=new_promoted_ids,
         line_item_objective=new_line_item_objective,

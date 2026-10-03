@@ -196,12 +196,12 @@ mod tests {
         TweetFieldsResultFiltered, TweetFieldsResultFound, TweetFieldsResultState,
     };
 
-    fn encoded(state: TweetFieldsResultState) -> Outcome {
-        Outcome::ResultStateThriftCompact(xai_x_thrift::serialize_compact(&state).unwrap().into())
+    fn encoded(state: &TweetFieldsResultState) -> Outcome {
+        Outcome::ResultStateThriftCompact(xai_x_thrift::serialize_compact(state).unwrap().into())
     }
 
     fn filtered(reason: ThriftFilteredReason) -> Outcome {
-        encoded(TweetFieldsResultState::Filtered(
+        encoded(&TweetFieldsResultState::Filtered(
             TweetFieldsResultFiltered::new(reason),
         ))
     }
@@ -235,7 +235,10 @@ mod tests {
                 ),
         );
         let endpoint = EvaluateTweetsEndpoint::new(
-            Arc::new(FilterTweets::new(sources.clone(), RuleEngine::for_tests())),
+            Arc::new(FilterTweets::new(
+                Arc::<InMemorySources>::clone(&sources),
+                RuleEngine::for_tests(),
+            )),
             ClientSwitches::for_tests(),
             LimitedActionsCopy::from_json("[]"),
         );
@@ -276,7 +279,7 @@ mod tests {
             ),
             (
                 ThriftLevel::TIMELINE_HOME_HYDRATION.0,
-                encoded(TweetFieldsResultState::Found(TweetFieldsResultFound::new(
+                encoded(&TweetFieldsResultState::Found(TweetFieldsResultFound::new(
                     None,
                 ))),
             ),
@@ -392,7 +395,7 @@ mod tests {
                 "limited_replies".to_string(),
             );
             let found = |action| {
-                encoded(TweetFieldsResultState::Found(TweetFieldsResultFound::new(
+                encoded(&TweetFieldsResultState::Found(TweetFieldsResultFound::new(
                     ThriftFilteredReason::SafetyResult(SafetyResult::new(None, action)),
                 )))
             };

@@ -191,6 +191,7 @@ ffi::Error LookupStart(
         table.dimensions()[0]
     };
     ctx->armLookup(job, stream);
+    ctx->flushLookupTail(true);
     return ffi::Error::Success();
   });
 }

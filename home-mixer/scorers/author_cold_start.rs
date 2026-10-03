@@ -117,6 +117,31 @@ fn record_cold_started_posts(viewer_arm: &str, count: u64) {
     }
 }
 
+fn slot_labels(query: &ScoredPostsQuery) -> [(&'static str, &'static str); 2] {
+    let surface = if query.in_network_only {
+        "ranked_following"
+    } else {
+        "for_you"
+    };
+    let cache = if query.has_cached_posts {
+        "cached"
+    } else {
+        "non_cached"
+    };
+    [("surface", surface), ("cache", cache)]
+}
+
+fn record_cold_start_slot(query: &ScoredPostsQuery, filled: bool) {
+    let Some(receiver) = xai_stats_receiver::global_stats_receiver() else {
+        return;
+    };
+    let labels = slot_labels(query);
+    receiver.incr("home_mixer.cold_start_slot_requests_total", &labels, 1);
+    if !filled {
+        receiver.incr("home_mixer.cold_start_slot_empty_total", &labels, 1);
+    }
+}
+
 fn parse_tracked_ids(raw: &str) -> HashSet<u64> {
     raw.split(',')
         .filter_map(|s| s.trim().parse().ok())
@@ -344,6 +369,17 @@ impl AuthorColdStart {
     }
 
     pub(crate) fn apply_with_decisions(
+        &self,
+        query: &ScoredPostsQuery,
+        candidates: &[PostCandidate],
+        scores: &[f64],
+    ) -> ColdStartOutcome {
+        let outcome = self.decide(query, candidates, scores);
+        record_cold_start_slot(query, outcome.lift.is_some());
+        outcome
+    }
+
+    fn decide(
         &self,
         query: &ScoredPostsQuery,
         candidates: &[PostCandidate],
@@ -846,6 +882,23 @@ rust_home_mixer:
             author_cold_start.apply(&query, &candidates, &scores);
             assert_eq!(impressor.impression_count("moe_exp"), 2);
         }
+    }
+
+    #[test]
+    fn slot_labels_split_by_surface_and_cache() {
+        let query = |in_network_only, has_cached_posts| ScoredPostsQuery {
+            in_network_only,
+            has_cached_posts,
+            ..Default::default()
+        };
+        assert_eq!(
+            slot_labels(&query(false, false)),
+            [("surface", "for_you"), ("cache", "non_cached")]
+        );
+        assert_eq!(
+            slot_labels(&query(true, true)),
+            [("surface", "ranked_following"), ("cache", "cached")]
+        );
     }
 
     #[test]

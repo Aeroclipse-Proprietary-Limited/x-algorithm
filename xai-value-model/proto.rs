@@ -86,6 +86,7 @@ impl CandidateScoringInputs {
             quoted_vqv_eligible: true,
             cold_start_lift_to_rank: c.cold_start_lift_to_rank,
             weighted_score: c.weighted_score,
+            author_exploration_bonus: 0.0,
         }
     }
 }

@@ -5,13 +5,18 @@ import logging
 import jax
 import jax.numpy as jnp
 import optax
-from jax.lax import with_sharding_constraint
 from jax.sharding import PartitionSpec as P
 
 from xrex.data.recsys.ads_head_masking import EARLY_RELABEL_STREAM_ID
+from xrex.utils.sharding import with_sharding_constraint
 
 logger = logging.getLogger(__name__)
 rank_logger = logging.getLogger("rank")
+
+
+def multihot_loss_weights(padding_mask: jax.Array, raw_weights: jax.Array | None) -> jax.Array:
+    mask = padding_mask.astype(jnp.int32)
+    return mask if raw_weights is None else mask * raw_weights
 
 
 def multihot_loss_compute(
@@ -21,6 +26,7 @@ def multihot_loss_compute(
     loss_mask: jax.Array,
     raw_weights: jax.Array | None = None,
     one_hot_targets_sharding=P(None),
+    normalizer: jax.Array | None = None,
 ):
     logits = logits.astype(jnp.float32)
 
@@ -39,16 +45,25 @@ def multihot_loss_compute(
 
     if raw_weights is not None:
         masked_bce = masked_bce * jnp.expand_dims(raw_weights, axis=-1)
-        weights = mask * raw_weights
-    else:
-        weights = mask
+    if normalizer is None:
+        normalizer = jnp.sum(multihot_loss_weights(padding_mask, raw_weights))
 
-    cross_entropy_loss = jnp.sum(masked_bce) / (jnp.sum(weights) + 1e-10)
+    cross_entropy_loss = jnp.sum(masked_bce) / (normalizer + 1e-10)
 
     return (
         cross_entropy_loss,
         mask,
     )
+
+
+def continuous_loss_weights(
+    valid_mask: jax.Array,
+    negative_sample_mask: jax.Array,
+    mask_negatives: bool,
+    raw_weights: jax.Array | None,
+) -> tuple[jax.Array, jax.Array]:
+    loss_mask = valid_mask & (~negative_sample_mask) if mask_negatives else valid_mask
+    return loss_mask, (loss_mask if raw_weights is None else loss_mask * raw_weights)
 
 
 def continuous_loss_compute(
@@ -60,6 +75,7 @@ def continuous_loss_compute(
     loss_type: str = "mse",
     mask_negatives: bool = True,
     raw_weights: jax.Array | None = None,
+    normalizer: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     gt_raw = gt_raw.astype(jnp.float32)
     pred_raw = pred_raw.astype(jnp.float32)
@@ -70,13 +86,11 @@ def continuous_loss_compute(
 
     pred_in_original_units = pred_raw * norm_scale
 
-    if mask_negatives:
-        loss_mask = valid_mask & (~negative_sample_mask)
-    else:
-        loss_mask = valid_mask
-
-    weights = loss_mask if raw_weights is None else loss_mask * raw_weights
-    num_loss_samples = jnp.sum(weights)
+    loss_mask, weights = continuous_loss_weights(
+        valid_mask, negative_sample_mask, mask_negatives, raw_weights
+    )
+    if normalizer is None:
+        normalizer = jnp.sum(weights)
 
     if loss_type == "mse":
         errors = (pred_norm - gt_norm) ** 2
@@ -89,7 +103,7 @@ def continuous_loss_compute(
     else:
         raise ValueError(f"Unknown loss_type: {loss_type}")
 
-    loss = jnp.sum(errors * weights) / jnp.maximum(num_loss_samples, 1.0)
+    loss = jnp.sum(errors * weights) / jnp.maximum(normalizer, 1.0)
 
     return loss, gt_clamped, pred_in_original_units, loss_mask, errors
 
@@ -114,19 +128,14 @@ def purchase_value_valid_mask(
     )
 
 
-def purchase_value_loss_compute(
+def purchase_value_weights(
     raw_ratio: jax.Array,
-    pred_ratio: jax.Array,
     baseline_mean_usd: jax.Array,
     valid_mask: jax.Array,
-    delta: float = 1.0,
-    raw_weights: jax.Array | None = None,
-) -> tuple[jax.Array, dict[str, jax.Array]]:
-    if not 0 < delta < float("inf"):
-        raise ValueError("purchase value Huber delta must be finite and positive")
+    raw_weights: jax.Array | None,
+) -> tuple[jax.Array, jax.Array]:
     ratio = raw_ratio.astype(jnp.float32)
     baseline = baseline_mean_usd.astype(jnp.float32)
-    pred = pred_ratio.astype(jnp.float32)
     valid = (
         valid_mask.astype(jnp.bool_)
         & jnp.isfinite(ratio)
@@ -136,15 +145,33 @@ def purchase_value_loss_compute(
     )
     weights = jnp.ones_like(ratio) if raw_weights is None else raw_weights.astype(jnp.float32)
     valid = valid & jnp.isfinite(weights) & (weights > 0)
-    weights = jnp.where(valid, weights, 0.0)
+    return valid, jnp.where(valid, weights, 0.0)
+
+
+def purchase_value_loss_compute(
+    raw_ratio: jax.Array,
+    pred_ratio: jax.Array,
+    baseline_mean_usd: jax.Array,
+    valid_mask: jax.Array,
+    delta: float = 1.0,
+    raw_weights: jax.Array | None = None,
+    normalizer: jax.Array | None = None,
+) -> tuple[jax.Array, dict[str, jax.Array]]:
+    if not 0 < delta < float("inf"):
+        raise ValueError("purchase value Huber delta must be finite and positive")
+    ratio = raw_ratio.astype(jnp.float32)
+    baseline = baseline_mean_usd.astype(jnp.float32)
+    pred = pred_ratio.astype(jnp.float32)
+    valid, weights = purchase_value_weights(raw_ratio, baseline_mean_usd, valid_mask, raw_weights)
     target = jnp.where(valid, ratio, 0.0)
     error = jnp.where(valid, jnp.where(valid, pred, 0.0) - target, 0.0)
     abs_error = jnp.abs(error)
     quadratic = jnp.minimum(abs_error, delta)
     errors = 0.5 * quadratic**2 + delta * (abs_error - quadratic)
     weight_sum = jnp.sum(weights)
-    denominator = jnp.where(weight_sum > 0, weight_sum, 1.0)
-    loss = jnp.sum(errors * weights) / denominator
+    if normalizer is None:
+        normalizer = weight_sum
+    loss = jnp.sum(errors * weights) / jnp.where(normalizer > 0, normalizer, 1.0)
     usd_abs_error = abs_error * jnp.where(valid, baseline, 0.0)
     sums = jnp.stack(
         [
@@ -159,18 +186,21 @@ def purchase_value_loss_compute(
             jnp.sum(jnp.where(valid, pred, 0.0) * weights),
         ]
     )
-    stats = {
-        "purchase-value_delayed_website_clicked-loss": loss,
-        "purchase-value_delayed_website_clicked-valid-count": jnp.sum(valid),
-        "purchase-value_delayed_website_clicked-weight-sum": weight_sum,
+    return loss, {**purchase_value_stats(sums), "_purchase-value-sums": sums}
+
+
+def purchase_value_stats(sums: jax.Array) -> dict[str, jax.Array]:
+    denominator = jnp.where(sums[4] > 0, sums[4], 1.0)
+    return {
+        "purchase-value_delayed_website_clicked-loss": sums[0] / denominator,
+        "purchase-value_delayed_website_clicked-valid-count": sums[5],
+        "purchase-value_delayed_website_clicked-weight-sum": sums[4],
         "purchase-value_delayed_website_clicked-ratio-mae": sums[1] / denominator,
         "purchase-value_delayed_website_clicked-target-ratio": sums[2] / denominator,
         "purchase-value_delayed_website_clicked-baseline-mean-usd": sums[3] / denominator,
         "purchase-value_delayed_website_clicked-usd-mae": sums[7] / denominator,
         "purchase-value_delayed_website_clicked-calib": sums[8] / (sums[2] + 1e-12),
-        "_purchase-value-sums": sums,
     }
-    return loss, stats
 
 
 def purchase_value_smoothed_stats(
@@ -230,19 +260,18 @@ def binary_threshold_loss_compute(
     threshold: float,
     mask_negatives: bool = True,
     raw_weights: jax.Array | None = None,
+    normalizer: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     logit = logit.astype(jnp.float32)
     gt_binary = (gt_raw.astype(jnp.float32) > threshold).astype(jnp.float32)
     per_element_loss = optax.sigmoid_binary_cross_entropy(logit, gt_binary)
 
-    if mask_negatives:
-        loss_mask = valid_mask & (~negative_sample_mask)
-    else:
-        loss_mask = valid_mask
-
-    weights = loss_mask if raw_weights is None else loss_mask * raw_weights
-    num_loss_samples = jnp.sum(weights)
-    loss = jnp.sum(per_element_loss * weights) / jnp.maximum(num_loss_samples, 1.0)
+    loss_mask, weights = continuous_loss_weights(
+        valid_mask, negative_sample_mask, mask_negatives, raw_weights
+    )
+    if normalizer is None:
+        normalizer = jnp.sum(weights)
+    loss = jnp.sum(per_element_loss * weights) / jnp.maximum(normalizer, 1.0)
 
     pred_prob = jax.nn.sigmoid(logit)
     return loss, gt_binary, pred_prob, loss_mask, per_element_loss
@@ -257,6 +286,7 @@ def tweedie_loss_compute(
     norm_scale: float = 300.0,
     mask_negatives: bool = True,
     raw_weights: jax.Array | None = None,
+    normalizer: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     gt = jnp.clip(gt_raw.astype(jnp.float32), 0.0, norm_scale)
     pred = jnp.maximum(pred_raw.astype(jnp.float32), 1e-6)
@@ -271,13 +301,11 @@ def tweedie_loss_compute(
             (2.0 - p) * log_pred
         ) / (2.0 - p)
 
-    if mask_negatives:
-        loss_mask = valid_mask & (~negative_sample_mask)
-    else:
-        loss_mask = valid_mask
-
-    weights = loss_mask if raw_weights is None else loss_mask * raw_weights
-    num_loss_samples = jnp.sum(weights)
-    loss = jnp.sum(deviance * weights) / jnp.maximum(num_loss_samples, 1.0)
+    loss_mask, weights = continuous_loss_weights(
+        valid_mask, negative_sample_mask, mask_negatives, raw_weights
+    )
+    if normalizer is None:
+        normalizer = jnp.sum(weights)
+    loss = jnp.sum(deviance * weights) / jnp.maximum(normalizer, 1.0)
 
     return loss, gt, pred, loss_mask, deviance

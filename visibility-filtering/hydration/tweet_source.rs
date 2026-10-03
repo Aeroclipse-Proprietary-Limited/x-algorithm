@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thrift::protocol::{TInputProtocol, TOutputProtocol, TSerializable, TType};
 use xai_core_entities::entities::{
-    EditControl, ExclusiveTweetControl, MediaEntities, MediaEntity, TakedownReason,
+    EditControl, ExclusiveTweetControl, MediaEntity, TakedownReason,
 };
 use xai_strato::strato_thrift::{strato_decode, StratoResult};
-use xai_strato::{encode, MValCodec, StratoGrpc};
+use xai_strato::{encode, Bytes, MValCodec, StratoGrpc};
 
 const COLUMN: &str = "tweetypie/federated/tweetForVisibility.Tweet";
 const OPERATION: &str = "fetch";
@@ -17,10 +17,7 @@ pub(crate) struct TweetSource {
 }
 
 impl TweetSource {
-    pub(crate) async fn get_tweets(
-        &self,
-        tweet_ids: &[u64],
-    ) -> HashMap<u64, Result<Option<TweetFeatures>>> {
+    pub(crate) async fn get_tweet_values(&self, tweet_ids: &[u64]) -> HashMap<u64, Result<Bytes>> {
         let calls = tweet_ids
             .iter()
             .map(|tweet_id| {
@@ -33,14 +30,7 @@ impl TweetSource {
             .collect();
 
         let result_batch = self.grpc_client.batch_call(calls, None).await;
-        tweet_ids
-            .iter()
-            .zip(result_batch)
-            .map(|(tweet_id, bytes_result)| {
-                let item = bytes_result.and_then(|bytes| decode_tweet(&bytes));
-                (*tweet_id, item)
-            })
-            .collect()
+        tweet_ids.iter().copied().zip(result_batch).collect()
     }
 }
 
@@ -63,6 +53,7 @@ struct Tweet {
     takedown_reasons: Vec<TakedownReason>,
     has_communities: bool,
     exclusive_tweet_control: Option<ExclusiveTweetControl>,
+    has_trusted_friends_control: bool,
     edit_control: Option<EditControl>,
     has_media_refs: bool,
     has_media_keys: bool,
@@ -89,9 +80,10 @@ impl Tweet {
             media: MediaFeature {
                 has_media: self.has_media_refs || self.has_card_reference,
                 has_uploaded_media: self.has_media_keys,
-                ..media_feature(self.media)
+                ..media_feature(&self.media)
             },
             is_community_tweet: self.has_communities,
+            is_trusted_friends_tweet: self.has_trusted_friends_control,
             edit_control: self.edit_control,
             exclusive_conversation_author_id: self
                 .exclusive_tweet_control
@@ -100,7 +92,7 @@ impl Tweet {
     }
 }
 
-fn media_feature(entities: MediaEntities) -> MediaFeature {
+fn media_feature(entities: &[MediaEntity]) -> MediaFeature {
     let mut feature = MediaFeature {
         has_media: !entities.is_empty(),
         ..Default::default()
@@ -154,6 +146,10 @@ impl TSerializable for Tweet {
                 Some(125) => tweet.has_communities = read_communities_non_empty(proto)?,
                 Some(155) => {
                     tweet.exclusive_tweet_control = Some(ExclusiveTweetControl::from_thrift(proto));
+                }
+                Some(156) => {
+                    proto.skip(field.field_type)?;
+                    tweet.has_trusted_friends_control = true;
                 }
                 Some(157) => tweet.edit_control = Some(EditControl::from_thrift(proto)),
                 Some(162) => tweet.has_media_refs = skip_list_non_empty(proto)?,
@@ -237,6 +233,7 @@ mod tests {
     const TWEET_ID: i64 = 10;
     const AUTHOR_ID: i64 = 7001;
     const CONVERSATION_AUTHOR_ID: i64 = 7003;
+    const TRUSTED_FRIENDS_LIST_ID: i64 = 9001;
 
     fn field(proto: &mut Proto<'_>, id: i16, ty: TType, value: impl FnOnce(&mut Proto<'_>)) {
         proto
@@ -387,6 +384,7 @@ mod tests {
                     list(p, 1, TType::I64, 1, |p| p.write_i64(500).unwrap())
                 });
                 structure(p, 155, |p| i64_field(p, 1, CONVERSATION_AUTHOR_ID));
+                structure(p, 156, |p| i64_field(p, 1, TRUSTED_FRIENDS_LIST_ID));
                 structure(p, 157, |p| {
                     structure(p, 1, |p| {
                         list(p, 1, TType::I64, 1, |p| p.write_i64(TWEET_ID).unwrap());
@@ -420,6 +418,7 @@ mod tests {
                 },
                 is_nullcast: true,
                 is_community_tweet: true,
+                is_trusted_friends_tweet: true,
                 edit_control,
                 exclusive_conversation_author_id: Some(CONVERSATION_AUTHOR_ID as u64),
             }

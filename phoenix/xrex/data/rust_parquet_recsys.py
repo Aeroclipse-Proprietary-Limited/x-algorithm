@@ -53,6 +53,14 @@ class RustParquetDataset(PhoenixDataset):
         prefetch_factor: int = 2,
         resume_position: DataPosition | None = None,
     ) -> Iterator[tuple[RecsysFeaturesBatch, dict[int, int] | None]]:
+        if not self.is_eval and (
+            self.shuffle_window_time_slices > 0 or self.shuffle_in_memory_buffer_rows > 0
+        ):
+            raise NotImplementedError(
+                "shuffle_window_time_slices/shuffle_in_memory_buffer_rows are not supported by "
+                "RustParquetDataset. Use PhoenixDataset (dataset_type=offline_kafka_dump)."
+            )
+
         RecordBatchProvider = rust_ext.load("xai_recsys_parquet_reader").RecordBatchProvider
 
         if self.use_conversion_labels:

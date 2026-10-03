@@ -4,6 +4,7 @@ pub mod country_codes;
 pub mod egress;
 pub mod feed_log;
 pub mod phoenix_request;
+pub mod popular_authors;
 pub mod rescore;
 pub mod shadow;
 pub mod strato_context;

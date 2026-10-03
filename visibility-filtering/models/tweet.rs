@@ -22,6 +22,7 @@ pub struct TweetFeatures {
     pub nsfw: NsfwFeature,
     pub is_nullcast: bool,
     pub is_community_tweet: bool,
+    pub is_trusted_friends_tweet: bool,
     pub edit_control: Option<EditControl>,
     pub exclusive_conversation_author_id: Option<u64>,
 }
@@ -92,7 +93,10 @@ fn legal_takedown_country(reason: &TakedownReason) -> Option<&str> {
         TakedownReason::LegalRequest { country_code }
         | TakedownReason::UnspecifiedReason { country_code } => Some(country_code),
         TakedownReason::Dmca => Some(WORLDWIDE_COPYRIGHT_COUNTRY_CODE),
-        _ => None,
+        TakedownReason::BystanderReport { .. }
+        | TakedownReason::HatefulImagery
+        | TakedownReason::SensitiveImagery
+        | TakedownReason::Unknown => None,
     }
 }
 
@@ -101,7 +105,13 @@ fn local_laws_takedown_country(reason: &TakedownReason) -> Option<&str> {
         TakedownReason::BystanderReport { country_code } if !is_worldwide_code(country_code) => {
             Some(country_code)
         }
-        _ => None,
+        TakedownReason::BystanderReport { .. }
+        | TakedownReason::LegalRequest { .. }
+        | TakedownReason::UnspecifiedReason { .. }
+        | TakedownReason::Dmca
+        | TakedownReason::HatefulImagery
+        | TakedownReason::SensitiveImagery
+        | TakedownReason::Unknown => None,
     }
 }
 

@@ -349,7 +349,13 @@ def ranker_attention_varlen_fa4(
     hdr = ((head_dim + 31) // 32) * 32
     sr_q = ((packed_S + block_size - 1) // block_size) * block_size
     sr_k = sr_q
-    if arch == 90:
+    if arch == 80:
+        assert packed_S % block_size == 0, (
+            "SM80 cutedsl ranker varlen attention requires packed_S % 128 == 0"
+        )
+        bwd_tile_m = 64
+        dKV_postprocess = qpk > 1
+    elif arch == 90:
         bwd_tile_m = 64
         dKV_postprocess = qpk > 1
     else:
@@ -391,7 +397,25 @@ def ranker_attention_varlen_fa4(
     )
 
     if cache_key not in _FA4_PACKED_CACHE:
-        if arch == 90:
+        if arch == 80:
+            from xrex.cutedsl.ranker_fa4.flash_fwd import FlashAttentionForwardSm80
+
+            fa_fwd = FlashAttentionForwardSm80(
+                cutlass.BFloat16,
+                head_dim,
+                head_dim,
+                qpk,
+                is_causal=False,
+                is_local=False,
+                pack_gqa=False,
+                tile_m=64,
+                tile_n=block_size,
+                num_stages=1,
+                num_threads=128,
+                Q_in_regs=False,
+                q_subtile_factor=block_size // 64,
+            )
+        elif arch == 90:
             from xrex.cutedsl.ranker_fa4.flash_fwd_sm90 import FlashAttentionForwardSm90
 
             fa_fwd = FlashAttentionForwardSm90(
@@ -483,7 +507,34 @@ def ranker_attention_varlen_fa4(
             softmax_scale=cutlass.Float32(sm_scale),
         )
 
-        if arch == 90:
+        if arch == 80:
+            from xrex.cutedsl.ranker_fa4.flash_bwd import FlashAttentionBackwardSm80
+
+            bwd_atom_layout_dkv = 2
+            fa_bwd = FlashAttentionBackwardSm80(
+                cutlass.BFloat16,
+                head_dim,
+                head_dim,
+                qpk,
+                m_block_size=bwd_tile_m,
+                n_block_size=block_size,
+                num_stages_Q=2,
+                num_stages_dO=2,
+                num_threads=256,
+                pack_gqa=False,
+                is_causal=False,
+                SdP_swapAB=False,
+                dKV_swapAB=False,
+                dQ_swapAB=False,
+                AtomLayoutMSdP=2,
+                AtomLayoutNdKV=bwd_atom_layout_dkv,
+                AtomLayoutMdQ=2,
+                V_in_regs=False,
+                q_subtile_factor=block_size // bwd_tile_m,
+            )
+            post_threads = 256
+            post_dq_atom_layout = 2
+        elif arch == 90:
             from xrex.cutedsl.ranker_fa4.flash_bwd_sm90 import FlashAttentionBackwardSm90
 
             bwd_atom_layout_dkv = 2
@@ -511,6 +562,7 @@ def ranker_attention_varlen_fa4(
                 subtile_factor=block_size // bwd_tile_m,
             )
             post_threads = 256
+            post_dq_atom_layout = 1
         else:
             from xrex.cutedsl.ranker_fa4.flash_bwd_sm100 import FlashAttentionBackwardSm100
 
@@ -524,6 +576,7 @@ def ranker_attention_varlen_fa4(
                 mask_mod=None,
             )
             post_threads = 128
+            post_dq_atom_layout = 1
         dq_accum_shape = (batch_size, num_q_heads, sr_q * hdr)
         dk_accum_shape = (batch_size, num_kv_heads, sr_k * hdr)
         dkv_out = jax.ShapeDtypeStruct(
@@ -596,7 +649,12 @@ def ranker_attention_varlen_fa4(
         )
 
         fa_post_dq = FlashAttentionBackwardPostprocess(
-            cutlass.BFloat16, head_dim, arch, tile_m=bwd_tile_m, num_threads=post_threads
+            cutlass.BFloat16,
+            head_dim,
+            arch,
+            tile_m=bwd_tile_m,
+            num_threads=post_threads,
+            AtomLayoutMdQ=post_dq_atom_layout,
         )
 
         @cute.jit

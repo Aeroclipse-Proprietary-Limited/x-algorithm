@@ -52,6 +52,7 @@ pub(super) enum RuleId {
     ExclusiveTweet,
     AuthorBlocksViewerExclusiveContent,
     CreatorTweetNsfw,
+    TrustedFriendsTweet,
 
     NsfwHighPrecision,
     GoreAndViolenceHighPrecision,
@@ -115,7 +116,19 @@ impl RuleClause {
                     FilteredReason::PossiblyUndesirable => "undesirable".to_owned(),
                     FilteredReason::ContainNsfwMedia => "nsfw_media".to_owned(),
                     FilteredReason::AuthorAccountIsInactive => "inactive".to_owned(),
-                    reason => snake(reason),
+                    reason @ (FilteredReason::AuthorBlockViewer
+                    | FilteredReason::AuthorIsProtected
+                    | FilteredReason::AuthorIsUnsafe
+                    | FilteredReason::ReportedTweet
+                    | FilteredReason::TweetMatchesViewerMutedKeyword(_)
+                    | FilteredReason::TweetIsBounced
+                    | FilteredReason::SafetyResult(_)
+                    | FilteredReason::AuthorIsDeactivated
+                    | FilteredReason::AuthorIsSuspended
+                    | FilteredReason::ViewerMutesAuthor
+                    | FilteredReason::TweetIsNullcast
+                    | FilteredReason::ExclusiveTweet
+                    | FilteredReason::ViewerBlocksAuthor) => snake(reason),
                 };
                 ("drop", Some(reason), None)
             }
@@ -129,6 +142,10 @@ impl RuleClause {
                 ("tombstone", Some(<&str>::from(reason).to_owned()), None)
             }
             ActionSpec::MediaRestriction(MediaRestriction::MediaInterstitial(blur)) => {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "InterstitialReason is a generated Thrift union; every variant but PossiblyUndesirable takes its snake-cased name, including any the IDL adds"
+                )]
                 let reason = match &blur.reason {
                     InterstitialReason::PossiblyUndesirable(_) => "undesirable".to_owned(),
                     reason => snake(reason),
@@ -299,6 +316,7 @@ pub(super) enum TweetPredicate {
     IsNullcast,
     IsCommunityTweet,
     HasExclusiveContent,
+    IsTrustedFriendsTweet,
     HasConversationControl(ConversationControlArm),
 }
 
@@ -671,6 +689,7 @@ predicates! {
         IsCommunityTweet reads Tweet => |_, tweet| tweet.is_community_tweet,
         HasExclusiveContent reads Tweet
             => |_, tweet| tweet.exclusive_conversation_author_id.is_some(),
+        IsTrustedFriendsTweet reads Tweet => |_, tweet| tweet.is_trusted_friends_tweet,
         HasConversationControl(arm) reads ConversationControl
             => |_, control| control.is_some_and(|control| control.arm == arm),
     }

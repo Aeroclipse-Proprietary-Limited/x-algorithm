@@ -1,4 +1,4 @@
-// mirrored from config feature-switch defaults; last sync 2026-10-01T16:00:46Z
+// mirrored from config feature-switch defaults; last sync 2026-10-02T16:00:41Z
 use xai_feature_switches::param;
 
 param!(
@@ -69,6 +69,12 @@ param!(
     String,
     "rust_home_mixer_phoenix_retrieval_inference_cluster_id",
     "Experiment1Fou"
+);
+param!(
+    EnablePhoenixOonReplies,
+    bool,
+    "rust_home_mixer_enable_phoenix_oon_replies",
+    false
 );
 param!(
     ShadowTrafficPhoenixClustersList,
@@ -457,6 +463,12 @@ param!(
     false
 );
 param!(
+    VMRankerSendPacingInputs,
+    bool,
+    "rust_home_mixer_vm_ranker_send_pacing_inputs",
+    false
+);
+param!(
     ColdStartImpressionThreshold,
     u32,
     "rust_home_mixer_cold_start_impression_threshold",
@@ -765,6 +777,13 @@ param!(
     EnableAdsBrandSafetyVerdictV2,
     bool,
     "rust_home_mixer_ads_bs_v2_exp_enabled",
+    true
+);
+
+param!(
+    EnableAdsAuthorBrandSafetyFallback,
+    bool,
+    "rust_home_mixer_ads_bs_author_fallback_enabled",
     false
 );
 param!(
@@ -908,6 +927,36 @@ param!(
     Vec<u64>,
     "rust_home_mixer_author_served_metrics_author_ids",
     vec![]
+);
+param!(
+    EnablePopularPostsSource,
+    bool,
+    "rust_home_mixer_enable_popular_posts_source",
+    false
+);
+param!(
+    PopularPostsTopAuthors,
+    u32,
+    "rust_home_mixer_popular_posts_top_authors",
+    1000
+);
+param!(
+    PopularPostsMaxResults,
+    u32,
+    "rust_home_mixer_popular_posts_max_results",
+    500
+);
+param!(
+    PopularPostsMaxPerAuthor,
+    u32,
+    "rust_home_mixer_popular_posts_max_per_author",
+    3
+);
+param!(
+    PopularPostsMaxRepliesRepostsPerAuthor,
+    u32,
+    "rust_home_mixer_popular_posts_max_replies_reposts_per_author",
+    0
 );
 
 param!(

@@ -116,7 +116,7 @@ impl HydrationPlan {
                 break;
             };
             let group = call.group;
-            if store.land(call, reply, started.elapsed()) == Landing::SourcesJoined {
+            if store.land(&call, reply, started.elapsed()) == Landing::SourcesJoined {
                 ready.extend(inputless());
             }
             ready.extend(self.readers(group));
@@ -334,7 +334,7 @@ mod tests {
                 .filter_map(|(_, tweet)| tweet.candidate().cloned())
                 .collect(),
             safety_labels: tweets()
-                .filter_map(|(id, tweet)| Some((id, tweet.safety_labels()?.clone())))
+                .filter_map(|(id, tweet)| Some((id, Arc::clone(tweet.safety_labels()?))))
                 .collect(),
             failed_ids: tweets()
                 .filter(|(_, tweet)| tweet.has_failed_node())
@@ -1265,7 +1265,7 @@ mod tests {
         let cores =
             HydrationBatch::from_results([1], HashMap::from([(1, Ok::<_, ()>(Some(retweet)))]));
         assert_eq!(
-            store.land(call, Reply::PureCores(cores), std::time::Duration::ZERO),
+            store.land(&call, Reply::PureCores(cores), std::time::Duration::ZERO),
             Landing::SourcesJoined
         );
         for source in [Source::SafetyLabels, Source::Flock] {
